@@ -4,6 +4,79 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Convert-ToXmlPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    return ($Path -replace "\\", "/").TrimEnd("/")
+}
+
+function Get-Stm32CubeRepoRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Contents
+    )
+
+    $repoRootCandidates = New-Object System.Collections.Generic.List[string]
+    $defaultRepoRoot = Join-Path $env:USERPROFILE "STM32Cube\Repository"
+
+    if (Test-Path $defaultRepoRoot) {
+        $repoRootCandidates.Add((Convert-ToXmlPath $defaultRepoRoot))
+    }
+
+    $repoRootPattern = '(?i)[A-Z]:/Users/[^/]+/STM32Cube/Repository'
+    foreach ($content in $Contents) {
+        $matches = [System.Text.RegularExpressions.Regex]::Matches($content, $repoRootPattern)
+        foreach ($match in $matches) {
+            $candidate = $match.Value
+            if (Test-Path ($candidate -replace "/", "\")) {
+                $repoRootCandidates.Add((Convert-ToXmlPath $candidate))
+            }
+        }
+    }
+
+    foreach ($candidate in $repoRootCandidates) {
+        return $candidate
+    }
+
+    throw "STM32Cube Repository root was not found. Checked USERPROFILE and project-referenced paths."
+}
+
+function Remove-DuplicateSemicolonPaths {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$XmlText
+    )
+
+    $includePathPattern = '(?s)<IncludePath>(.*?)</IncludePath>'
+
+    return [System.Text.RegularExpressions.Regex]::Replace(
+        $XmlText,
+        $includePathPattern,
+        {
+            param($match)
+
+            $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+            $paths = New-Object System.Collections.Generic.List[string]
+
+            foreach ($segment in ($match.Groups[1].Value -split ';')) {
+                $trimmed = $segment.Trim()
+                if ([string]::IsNullOrWhiteSpace($trimmed)) {
+                    continue
+                }
+
+                if ($seen.Add($trimmed)) {
+                    $paths.Add($trimmed)
+                }
+            }
+
+            return "<IncludePath>$([string]::Join(';', $paths))</IncludePath>"
+        }
+    )
+}
+
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $resolvedProjectInput = $ProjectFile
 if (-not [System.IO.Path]::IsPathRooted($resolvedProjectInput)) {
@@ -34,6 +107,12 @@ if (Test-Path $uvoptxPath) {
 }
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$rawContents = @()
+foreach ($file in $filesToPatch) {
+    $rawContents += (Get-Content -Path $file -Raw)
+}
+$stm32CubeRepoRoot = Get-Stm32CubeRepoRoot -Contents $rawContents
+$repoRootPattern = '(?i)[A-Z]:/Users/[^/]+/STM32Cube/Repository'
 
 foreach ($file in $filesToPatch) {
     $content = Get-Content -Path $file -Raw
@@ -50,6 +129,8 @@ foreach ($file in $filesToPatch) {
 
     $updated = $updated.Replace($portablePathCm4, $portablePathGccCm7)
     $updated = $updated.Replace($portablePathRvdsCm7, $portablePathGccCm7)
+    $updated = [System.Text.RegularExpressions.Regex]::Replace($updated, $repoRootPattern, $stm32CubeRepoRoot)
+    $updated = Remove-DuplicateSemicolonPaths -XmlText $updated
 
     $duplicatePattern = $null
     if ($file -like "*.uvprojx") {
@@ -82,6 +163,12 @@ foreach ($file in $filesToPatch) {
         -not $verify.Contains($portablePathGccCm7)) {
         throw "Patch verification failed: GCC ARM_CM7 r0p1 portable path not found in $file"
     }
+    $repoRootMatches = [System.Text.RegularExpressions.Regex]::Matches($verify, $repoRootPattern)
+    foreach ($match in $repoRootMatches) {
+        if ((Convert-ToXmlPath $match.Value) -ine $stm32CubeRepoRoot) {
+            throw "Patch verification failed: stale STM32Cube Repository path is still present in $file"
+        }
+    }
     if ($null -ne $duplicatePattern) {
         $remainingMatches = [System.Text.RegularExpressions.Regex]::Matches($verify, $duplicatePattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
         if ($remainingMatches.Count -gt 1) {
@@ -91,3 +178,4 @@ foreach ($file in $filesToPatch) {
 }
 
 Write-Host "Verification OK: using $portablePathGccCm7"
+Write-Host "Verification OK: using STM32Cube Repository root $stm32CubeRepoRoot"

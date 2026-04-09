@@ -45,6 +45,10 @@
 
 /* USER CODE BEGIN Includes */
 /* Section where include file can be added */
+#if defined(__clang__) || defined(__ARMCC_VERSION)
+  #include <stdint.h>
+  extern uint32_t SystemCoreClock;
+#endif
 /* USER CODE END Includes */
 
 /* Ensure definitions are only used by the compiler, and not by the assembler. */
