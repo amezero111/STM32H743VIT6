@@ -297,16 +297,16 @@ static float DJINormalizeAngleDeg360(float angle_deg)
 /**
  * @brief 将单圈目标角映射到距离当前总角度最近的等效目标
  *
- * @note  application 仍然传单圈ecd参考值；模块内部负责取优弧。
+ * @note  参数 target_single_turn_deg 为角度值(degrees)，由应用层直接传入。
  */
-static float DJICalcNearestSingleTurnTargetDeg(float current_total_angle_deg, float target_single_turn_ecd)
+static float DJICalcNearestSingleTurnTargetDeg(float current_total_angle_deg, float target_single_turn_deg)
 {
     float current_single_angle_deg;
     float target_single_angle_deg;
     float delta_angle_deg;
 
     current_single_angle_deg = DJINormalizeAngleDeg360(current_total_angle_deg);
-    target_single_angle_deg = DJINormalizeAngleDeg360(DJIEcdToAngleDeg(target_single_turn_ecd));
+    target_single_angle_deg = DJINormalizeAngleDeg360(target_single_turn_deg);
     delta_angle_deg = target_single_angle_deg - current_single_angle_deg;
 
     if (delta_angle_deg > 180.0f) {
@@ -759,7 +759,7 @@ void DJIMotorControl(void)
                 pid_ref = -pid_ref;
             }
 
-            // 计算位置环
+            // 计算位置环, pid_ref 应为角度值(degrees), 与 total_angle 同单位
             if ((motor_setting->close_loop_type & ANGLE_LOOP) && motor_setting->outer_loop_type == ANGLE_LOOP) {
                 if (motor_setting->angle_feedback_source == OTHER_FEED) {
                     pid_measure = *motor_controller->other_angle_feedback_ptr;
@@ -767,8 +767,6 @@ void DJIMotorControl(void)
                     pid_measure = measure->total_angle;
                     if (motor_setting->angle_mode == MOTOR_ANGLE_MODE_SINGLE_TURN) {
                         pid_ref = DJICalcNearestSingleTurnTargetDeg(measure->total_angle, pid_ref);
-                    } else {
-                        pid_ref = DJIEcdToAngleDeg(pid_ref);
                     }
                 }
                 if (motor_setting->feedback_reverse_flag == FEEDBACK_DIRECTION_REVERSE) {

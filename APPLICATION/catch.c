@@ -159,26 +159,26 @@ static void DJIMotorsInit(void)
  */
 static void LiftInit(void)
 {
-    if (!is_init_2006) {
-        DJIMotorSetRef(DJM3508, 15000);
-        if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_11) == 1) {
-            /* 机械臂仍在触发位, 反向驱动使其离开 */
-            DJIMotorEnable(DJM2006);
-            DJIMotorOuterLoop(DJM2006, SPEED_LOOP);
-            DJIMotorSetRef(DJM2006, -4000);
-        } else {
-            osDelay(10);
-            if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_11) == 0) {
-                /* 确认已离开触发位, 停止并归零 */
-                DJIMotorStop(DJM2006);
-                DJIMotorReset(DJM2006);
-                DJIMotorOuterLoop(DJM2006, ANGLE_LOOP);
-                DJIMotorSetRef(DJM2006, 0);
-                is_init_2006 = 1;
-            }
-        }
-        return; /* M2006 归零未完成, 跳过 M3508 阶段 */
-    }
+//    if (!is_init_2006) {
+//        DJIMotorSetRef(DJM3508, 15000);
+//        if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_11) == 1) {
+//            /* 机械臂仍在触发位, 反向驱动使其离开 */
+//            DJIMotorEnable(DJM2006);
+//            DJIMotorOuterLoop(DJM2006, SPEED_LOOP);
+//            DJIMotorSetRef(DJM2006, -4000);
+//        } else {
+//            osDelay(10);
+//            if (HAL_GPIO_ReadPin(GPIOE, GPIO_PIN_11) == 0) {
+//                /* 确认已离开触发位, 停止并归零 */
+//                DJIMotorStop(DJM2006);
+//                DJIMotorReset(DJM2006);
+//                DJIMotorOuterLoop(DJM2006, ANGLE_LOOP);
+//                DJIMotorSetRef(DJM2006, 0);
+//                is_init_2006 = 1;
+//            }
+//        }
+//        return; /* M2006 归零未完成, 跳过 M3508 阶段 */
+//    }
 
     if (!is_init_3508) {
         HAL_GPIO_WritePin(GPIOE, GPIO_PIN_9, GPIO_PIN_RESET);
@@ -193,7 +193,12 @@ static void LiftInit(void)
                 DJIMotorStop(DJM3508);
                 DJIMotorReset(DJM3508);
                 DJIMotorOuterLoop(DJM3508, ANGLE_LOOP);
+							  DJIMotorEnable(DJM3508);
                 DJIMotorSetRef(DJM3508, 0);
+							  DJIMotorReset(DJM2006);
+							  DJIMotorSetRef(DJM2006, 0);
+							   FeiteOpen();
+							  DJIMotorSetRef(DJM3508, 5000);
                 is_init_3508 = 1;
             }
         }
@@ -232,7 +237,7 @@ static void FeitePutDown(void)
 }
 
 /** 张开姿态: 三爪完全打开,释放物体 */
-static void FeiteOpen(void)
+ void FeiteOpen(void)
 {
     FeiteMotorSetRef(FT_1, 1500);
     FeiteMotorSetSpeed(FT_1, 500);
@@ -273,36 +278,55 @@ void CatchTask(void)
     static uint8_t is_timing = 0;
 
     LiftInit();
-
+//	if(is_init_3508){
+//	  
+//if (remote_data->switch_left == 1){
+// DJIMotorSetRef(DJM3508, 20000);
+//	if(DJM3508->measure.total_angle > 19000){
+//	FeiteCatch();
+//		
+//	if(!is_timing){
+//	catch_start_time = HAL_GetTick();
+//	if ((uint32_t)(HAL_GetTick() - catch_start_time) > 3500){
+//	DJIMotorSetRef(DJM3508, 25000);
+//	is_timing = 1;
+//		}
+//	}
+//}
+// }
+//if(remote_data->switch_left == 3){
+//is_timing = 0;
+// DJIMotorSetRef(DJM3508, 20000);
+// DJIMotorSetRef(DJM2006,8300);
+//	
+//}
     if (remote_data->switch_left == 2) {
         const uint8_t rocker_pressed = (remote_data->rocker_r1 < -500);
-        DJIMotorSetRef(DJM3508, 1000);
-        if (DJM3508->measure.total_angle > 900) {
-            HAL_GPIO_WritePin(GPIOE, GPIO_PIN_9, GPIO_PIN_SET);
-            DJIMotorSetRef(DJM2006, 9000);
-        }
+        
 
         if (rocker_pressed) {
-            if (DJM2006->measure.total_angle > 8500) {
                 if (is_timing == 0) {
                     catch_start_time = HAL_GetTick();
+									 FeiteCatch();
                     is_timing = 1;
-                    FeiteCatch();
                 }
 
                 /* 夹取后延时 1500ms, 然后将升降台抬高 */
-                if ((uint32_t)(HAL_GetTick() - catch_start_time) > 1500) {
-                    DJIMotorSetRef(DJM3508, 10000);
-                }
-            }
+                if ((uint32_t)(HAL_GetTick() - catch_start_time) > 3000) {
+                    DJIMotorSetRef(DJM3508, 25000);
+									  DJIMotorSetRef(DJM2006,8500);
+                }     
         } else {
             /* 摇杆松开: 取消计时, 升降回位, 夹具张开 */
             is_timing = 0;
-            DJIMotorSetRef(DJM3508, 1000);
+            DJIMotorSetRef(DJM3508, 10000);
+					  DJIMotorSetRef(DJM2006,0);
             FeiteOpen();
         }
     }
 
     /* 每周期批量下发舵机目标位置 */
-    FeiteMotorControl();
+    
+	
+	FeiteMotorControl();
 }

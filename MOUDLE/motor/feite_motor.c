@@ -3,7 +3,7 @@
 #include <string.h>
 
 /* 默认只使用一条 USART1 飞特总线，多舵机实例共享该总线状态和收发缓冲。 */
-static FeiteMotor_Bus_s default_bus;
+FeiteMotor_Bus_s default_bus;
 static uint8_t default_bus_initialized = 0U;
 static FeiteMotor_Instance *feite_motor_instances[FEITE_MOTOR_CNT] = {NULL};
 static uint8_t feite_motor_idx = 0U;
@@ -109,48 +109,26 @@ static HAL_StatusTypeDef FeiteWritePacket(FeiteMotor_Bus_s *bus,
         return status;
     }
 
+    /* 发送完成后立即开启 DMA 接收，准备拦截反馈 */
+    bus->rx_flag = 0U;
+    HAL_UARTEx_ReceiveToIdle_DMA(bus->huart, bus->rx_buf, sizeof(bus->rx_buf));
+    __HAL_DMA_DISABLE_IT(bus->huart->hdmarx, DMA_IT_HT); // 禁用过半中断
+
     FeiteSetError(bus, FEITE_ERROR_NONE);
     return HAL_OK;
 }
 
 static HAL_StatusTypeDef FeiteReadByte(FeiteMotor_Bus_s *bus, uint8_t *data)
 {
-    HAL_StatusTypeDef status;
-
-    status = HAL_UART_Receive(bus->huart, data, 1U, bus->rx_timeout_ms);
-    if (status != HAL_OK) {
-        FeiteSetError(bus, FEITE_ERROR_NO_REPLY);
-    }
-
-    return status;
+    // 该函数在 DMA 模式下不再需要，保留空实现以兼容旧代码（如有调用）
+    return HAL_ERROR;
 }
 
 /* 从串口流中寻找连续两个 0xFF，避免前面残留杂字节导致应答错位。 */
 static HAL_StatusTypeDef FeiteCheckHead(FeiteMotor_Bus_s *bus)
 {
-    uint8_t data;
-    uint8_t last = 0U;
-    uint8_t count;
-
-    if (bus == NULL || bus->huart == NULL) {
-        FeiteSetError(bus, FEITE_ERROR_PARAM);
-        return HAL_ERROR;
-    }
-
-    for (count = 0U; count < 16U; ++count) {
-        if (FeiteReadByte(bus, &data) != HAL_OK) {
-            return HAL_TIMEOUT;
-        }
-
-        if (last == 0xFFU && data == 0xFFU) {
-            return HAL_OK;
-        }
-
-        last = data;
-    }
-
-    FeiteSetError(bus, FEITE_ERROR_NO_REPLY);
-    return HAL_TIMEOUT;
+    // DMA 模式下直接通过解析内存处理，不再需要此函数
+    return HAL_OK;
 }
 
 /* 读取状态应答帧：0xFF 0xFF ID LEN ERROR PARAM... CHECKSUM。 */
@@ -159,10 +137,10 @@ static HAL_StatusTypeDef FeiteReadStatus(FeiteMotor_Bus_s *bus,
                                           uint8_t *params,
                                           uint8_t *param_len)
 {
-    uint8_t header[3];
+    uint32_t tickstart = HAL_GetTick();
+    uint8_t *packet;
     uint8_t packet_len;
     uint8_t param_count;
-    uint8_t checksum;
     uint8_t checksum_calc;
     uint8_t i;
 
@@ -171,54 +149,61 @@ static HAL_StatusTypeDef FeiteReadStatus(FeiteMotor_Bus_s *bus,
         return HAL_ERROR;
     }
 
-    if (FeiteCheckHead(bus) != HAL_OK) {
-        return HAL_TIMEOUT;
+    /* 等待 DMA 接收完成标志位或超时 */
+    while (bus->rx_flag == 0U) {
+        if ((HAL_GetTick() - tickstart) > bus->rx_timeout_ms) {
+            HAL_UART_AbortReceive(bus->huart);
+            FeiteSetError(bus, FEITE_ERROR_NO_REPLY);
+            return HAL_TIMEOUT;
+        }
     }
 
-    if (HAL_UART_Receive(bus->huart, header, sizeof(header), bus->rx_timeout_ms) != HAL_OK) {
+    /* 解析 DMA 接收到的数据包 */
+    // 寻找 0xFF 0xFF 头
+    packet = NULL;
+    for (i = 0; i < (bus->rx_size - 1); i++) {
+        if (bus->rx_buf[i] == 0xFF && bus->rx_buf[i+1] == 0xFF) {
+            packet = &bus->rx_buf[i];
+            break;
+        }
+    }
+
+    if (packet == NULL) {
         FeiteSetError(bus, FEITE_ERROR_NO_REPLY);
-        return HAL_TIMEOUT;
+        return HAL_ERROR;
     }
 
-    if (expected_id != FEITE_BROADCAST_ID && header[0] != expected_id) {
+    if (expected_id != FEITE_BROADCAST_ID && packet[2] != expected_id) {
         FeiteSetError(bus, FEITE_ERROR_ID);
         return HAL_ERROR;
     }
 
-    packet_len = header[1];
-    if (packet_len < 2U || packet_len > (FEITE_PACKET_MAX_LEN - 4U)) {
-        FeiteSetError(bus, FEITE_ERROR_LENGTH);
-        return HAL_ERROR;
-    }
-
+    packet_len = packet[3]; // LEN 字段
     param_count = (uint8_t)(packet_len - 2U);
-    if (param_count > FEITE_PACKET_MAX_PARAM_LEN) {
+    
+    // 基础包长度校验：FF FF ID LEN ERR ... SUM (最小 6 字节)
+    if (packet_len < 2U || (uint16_t)(packet_len + 4U) > bus->rx_size) {
         FeiteSetError(bus, FEITE_ERROR_LENGTH);
         return HAL_ERROR;
     }
 
-    if (param_count > 0U && HAL_UART_Receive(bus->huart, params, param_count, bus->rx_timeout_ms) != HAL_OK) {
-        FeiteSetError(bus, FEITE_ERROR_NO_REPLY);
-        return HAL_TIMEOUT;
-    }
-
-    if (HAL_UART_Receive(bus->huart, &checksum, 1U, bus->rx_timeout_ms) != HAL_OK) {
-        FeiteSetError(bus, FEITE_ERROR_NO_REPLY);
-        return HAL_TIMEOUT;
-    }
-
-    checksum_calc = (uint8_t)(header[0] + header[1] + header[2]);
-    for (i = 0U; i < param_count; ++i) {
-        checksum_calc += params[i];
+    // 校验和校验：从 ID(packet[2]) 到最后一个参数
+    checksum_calc = 0;
+    for (i = 2; i < (uint8_t)(packet_len + 3); i++) {
+        checksum_calc += packet[i];
     }
     checksum_calc = (uint8_t)(~checksum_calc);
 
-    if (checksum != checksum_calc) {
+    if (packet[packet_len + 3] != checksum_calc) {
         FeiteSetError(bus, FEITE_ERROR_CHECKSUM);
         return HAL_ERROR;
     }
 
-    bus->last_status = header[2];
+    // 拷贝结果
+    bus->last_status = packet[4];
+    if (param_count > 0) {
+        memcpy(params, &packet[5], param_count);
+    }
     *param_len = param_count;
 
     FeiteSetError(bus, FEITE_ERROR_NONE);

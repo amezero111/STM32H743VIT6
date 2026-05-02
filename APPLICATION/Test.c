@@ -5,7 +5,7 @@
 #include "fdcan.h"
 #include "remote.h" // 引用遥控器库
 
-/* 当前应用层保留单电机角度环模板,后续扩多电机时直接按此结构增加实例即可 */
+/* 单电机速度环测试模板 */
 // 引入串口库以测试 TX 数据
 #include "usart.h" 
 
@@ -14,7 +14,7 @@
 
 #define CHASSIS_DWT_FREQ_MHZ 400U
 #define CHASSIS_MOTOR_RF_TX_ID 1U
-#define CHASSIS_MOTOR_RF_TARGET_ECD 2048.0f
+#define CHASSIS_MOTOR_RF_TARGET_RPM 5000.0f
 
 static DJIMotor_Instance *motor_rf;
 static Remote_Data_s *test_remote; // 方便调试器直接追踪的遥控器指针，同 motor_rf
@@ -27,8 +27,8 @@ static void ChassisSetMotorRef(void)
         return;
     }
 
-    /* 当前固定目标用于烧录后直接验证角度环 */
-    DJIMotorSetRef(motor_rf, CHASSIS_MOTOR_RF_TARGET_ECD);
+    /* 固定转速目标用于验证速度环 */
+    DJIMotorSetRef(motor_rf, CHASSIS_MOTOR_RF_TARGET_RPM);
 }
 
 static void TestChassisInit(void)
@@ -73,8 +73,8 @@ static void TestChassisInit(void)
             .feedback_reverse_flag = FEEDBACK_DIRECTION_NORMAL,
             .motor_reverse_flag = MOTOR_DIRECTION_NORMAL,
             .angle_mode = MOTOR_ANGLE_MODE_SINGLE_TURN,
-            .outer_loop_type = ANGLE_LOOP,
-            .close_loop_type = ANGLE_LOOP | SPEED_LOOP,
+            .outer_loop_type = SPEED_LOOP,
+            .close_loop_type = CURRENT_LOOP | SPEED_LOOP,
         },
         .motor_type = M3508,
     };

@@ -24,7 +24,7 @@
 #define FEITE_REG_PRESENT_POSITION_L 56U
 #define FEITE_REG_PRESENT_SPEED_L   58U
 
-#define FEITE_DEFAULT_TIMEOUT_MS    20U
+#define FEITE_DEFAULT_TIMEOUT_MS    2U
 #define FEITE_DEFAULT_RAW_TO_DEG    (360.0f / 4096.0f)
 
 typedef enum {
@@ -57,6 +57,8 @@ typedef struct {
     FeiteMotor_Error_e last_error;
     uint8_t tx_buf[FEITE_PACKET_MAX_LEN];
     uint8_t rx_buf[FEITE_PACKET_MAX_LEN];
+    volatile uint8_t rx_flag;       // 新增：接收完成标志位
+    uint16_t rx_size;               // 新增：实际接收长度
 } FeiteMotor_Bus_s;
 
 typedef struct {

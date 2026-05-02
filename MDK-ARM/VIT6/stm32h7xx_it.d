@@ -42,4 +42,9 @@ vit6/stm32h7xx_it.o: ..\Core\Src\stm32h7xx_it.c ..\Core\Inc\main.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_pcd.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_ll_usb.h \
   ..\Drivers\STM32H7xx_HAL_Driver\Inc\stm32h7xx_hal_pcd_ex.h \
-  ..\Core\Inc\stm32h7xx_it.h ..\MOUDLE\remote\remote.h
+  ..\Core\Inc\stm32h7xx_it.h ..\MOUDLE\motor\feite_motor.h \
+  ..\MOUDLE\motor\motor_def.h ..\MOUDLE\algorithm\controller.h \
+  C:\Keil_v5\ARM\ARMCLANG\Bin\..\include\string.h \
+  C:\Keil_v5\ARM\ARMCLANG\Bin\..\include\stdlib.h ..\BSP\bsp_dwt.h \
+  ..\BSP\bsp_fdcan.h ..\Core\Inc\fdcan.h ..\Core\Inc\main.h \
+  ..\Core\Inc\usart.h ..\MOUDLE\remote\remote.h

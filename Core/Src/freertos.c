@@ -29,6 +29,7 @@
 #include "dji_motor.h"
 #include "usb.h"
 #include "remote.h" // 新增导入遥控器库
+#include "catch.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -61,7 +62,7 @@ const osThreadAttr_t Chassis_Task_attributes = {
 osThreadId_t DJIMotor_TaskHandle;
 const osThreadAttr_t DJIMotor_Task_attributes = {
   .name = "DJIMotor_Task",
-  .stack_size = 512 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for usb_Task */
@@ -69,7 +70,7 @@ osThreadId_t usb_TaskHandle;
 const osThreadAttr_t usb_Task_attributes = {
   .name = "usb_Task",
   .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityHigh,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for Remot_Task */
 osThreadId_t Remot_TaskHandle;
@@ -82,8 +83,8 @@ const osThreadAttr_t Remot_Task_attributes = {
 osThreadId_t Catch_TaskHandle;
 const osThreadAttr_t Catch_Task_attributes = {
   .name = "Catch_Task",
-  .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .stack_size = 768 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -168,6 +169,7 @@ void ChassisControl(void *argument)
   for(;;)
   {
 		ChassisTask();
+		//Test();
     osDelay(1);
   }
   /* USER CODE END ChassisControl */
@@ -244,6 +246,7 @@ void catch_start(void *argument)
   /* Infinite loop */
   for(;;)
   {
+		CatchTask();
     osDelay(1);
   }
   /* USER CODE END catch_start */

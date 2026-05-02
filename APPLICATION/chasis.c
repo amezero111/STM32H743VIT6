@@ -1,3 +1,11 @@
+/**
+ * @file chassis.c
+ * @author 
+ * @brief 底盘控制实现，包含电机初始化、IMU 处理和运动学分解
+ * @version 0.1
+ * @date 2024-xx-xx
+ */
+
 #include "chassis.h"
 #include "DJI_motor.h"
 #include "bsp_dwt.h"
@@ -5,14 +13,23 @@
 #include "robot_def.h"
 #include <math.h>
 
-
+/* 底盘行走电机实例（3508 电机）: 左前, 右前, 左后, 右后 */
 static DJIMotor_Instance *motor_lf, *motor_rf, *motor_lb, *motor_rb;
+
+/* 底盘转向电机实例（6020 电机）: 左前, 右前, 左后, 右后 */
 static DJIMotor_Instance *motor_steering_lf, *motor_steering_rf, *motor_steering_lb, *motor_steering_rb;
+
+/* 航向锁定 PID 控制器 */
 static PID_Instance chassis_follow_pid;
+
+/* 临时目标轮速与角度（用于某些特殊运动模型） */
 static float vt_lf, vt_rf, vt_lb, vt_rb;
 static float at_lf, at_rf, at_lb, at_rb;
+
+/* 底盘 IMU 内部数据存储 */
 static ChassisIMUData_s chassis_imu_data;
 
+/* 全局底盘控制命令状态 */
 ChassisCtrlCmd_s chassis_ctrl_cmd = {
     .imu_enable = 0U,
     .Chassis_IMU_data = &chassis_imu_data,
@@ -22,6 +39,9 @@ ChassisCtrlCmd_s chassis_ctrl_cmd = {
     .offset_w = 0.0f,
 };
 
+/**
+ * @brief 将角度规格化至 [-180, 180]
+ */
 static float ChassisIMU_NormalizeDeg(float angle_deg)
 {
     while (angle_deg > 180.0f) {
@@ -35,11 +55,17 @@ static float ChassisIMU_NormalizeDeg(float angle_deg)
     return angle_deg;
 }
 
+/**
+ * @brief 计算两个角度的最小偏差值
+ */
 static float ChassisIMU_DiffDeg(float target_deg, float current_deg)
 {
     return ChassisIMU_NormalizeDeg(target_deg - current_deg);
 }
 
+/**
+ * @brief 底盘 IMU 数据及其控制结构体初始化
+ */
 static void ChassisIMU_Init(void)
 {
     chassis_imu_data.Yaw = 0.0f;
@@ -55,6 +81,10 @@ static void ChassisIMU_Init(void)
     chassis_ctrl_cmd.offset_w = 0.0f;
 }
 
+/**
+ * @brief 更新底盘 IMU 航向信息，通过 Z 轴角速度积分实现
+ * @param dt_s 采样周期 (秒)
+ */
 static void ChassisIMU_Update(float dt_s)
 {
     BMI088_Status_t status;
@@ -131,7 +161,7 @@ void ChassisInit()
     };
 
     chassis_motor_config.can_init_config.tx_id                             = 4;
-    chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_NORMAL;
+    chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
        motor_lf                                                               = DJIMotorInit(&chassis_motor_config);
 
     chassis_motor_config.can_init_config.tx_id                             = 1;
@@ -147,41 +177,13 @@ void ChassisInit()
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_REVERSE;
     motor_rb                                                               = DJIMotorInit(&chassis_motor_config);
 
-             Motor_Init_Config_s chassis_motor_config1 = {
-        .can_init_config.fdcan_handle   = &hfdcan1,
-        .controller_param_init_config = {
-            .speed_PID = {
-                .Kp            = 4, // 3
-                .Ki            = 0.2, // 0.5
-                .Kd            = 0.005,   // 0
-                .IntegralLimit = 3000,//5000
-                .Improve       = PID_Trapezoid_Intergral | PID_Integral_Limit | PID_Derivative_On_Measurement,
-                .MaxOut        = 10000,
-            },
-            .current_PID = {
-                .Kp            = 1, // 1
-                .Ki            = 0.01,   // 0
-                .Kd            = 0,
-                .IntegralLimit = 3000,//3000
-                .Improve       = PID_Trapezoid_Intergral | PID_Integral_Limit | PID_Derivative_On_Measurement,
-                .MaxOut        = 10000,
-            },
-        },
-        .controller_setting_init_config = {
-            .angle_feedback_source = MOTOR_FEED,
-            .speed_feedback_source = MOTOR_FEED,
-            .outer_loop_type       = SPEED_LOOP,
-            .close_loop_type       = CURRENT_LOOP | SPEED_LOOP,
-        },
-        .motor_type = M3508,
-    };
 
     // 6020 转向电机初始化。
     Motor_Init_Config_s chassis_motor_steering_config = {
         .can_init_config.fdcan_handle   = &hfdcan2,
         .controller_param_init_config = {
             .angle_PID = {
-                .Kp                = 12,
+                .Kp                = 8,
                 .Ki                = 0.2,
                 .Kd                = 0,
                 .CoefA             = 5,
@@ -190,7 +192,7 @@ void ChassisInit()
                 .IntegralLimit     = 1000,
                 .MaxOut            = 16000,
                 .Derivative_LPF_RC = 0.001,
-                .DeadBand          = 0.5,
+                .DeadBand          = 1,
             },
             .speed_PID = {
                 .Kp            = 40,
@@ -338,9 +340,9 @@ void SteeringWheelKinematics(float vx, float vy, float vw)
     float chassis_vw = 0;
     static uint8_t first_run_kinematics = 1;
 
-    // 当前三轮模式的指针映射：lf->3 号前轮，lb->1 号左后轮，rb->2 号右后轮。
+    // 当前三轮模式的指针映射：lf->3 号前轮，rf->1 号左后轮，rb->2 号右后轮。
     at_3_last = motor_steering_lf->measure.total_angle;
-    at_1_last = motor_steering_lb->measure.total_angle;
+    at_1_last = motor_steering_rf->measure.total_angle;
     at_2_last = motor_steering_rb->measure.total_angle;
 
     /*
@@ -432,7 +434,7 @@ void SteeringWheelKinematics(float vx, float vy, float vw)
 
     if(w == 0 && vx == 0 && vy == 0) {
         DJIMotorSetRef(motor_lf, 0);
-        DJIMotorSetRef(motor_lb, 0);
+        DJIMotorSetRef(motor_rf, 0);
         DJIMotorSetRef(motor_rb, 0);
     } else {
         DJIMotorSetRef(motor_lf, vt_3);
@@ -462,6 +464,28 @@ void SteeringWheelKinematics(float vx, float vy, float vw)
 
 void ChassisTask(void)
 {
+    float vx = 0.0f, vy = 0.0f, vw = 0.0f;
+
     ChassisIMU_Update(0.001f);
-    SteeringWheelKinematics(0.0f, 0.0f, 0.0f);
+
+    if (remote_data != NULL) {
+        // 左摇杆 Y轴 → 前后线速度 vx
+        vx = (float)remote_data->rocker_l1 / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
+        // 左摇杆 X轴 → 左右线速度 vy
+        vy = (float)remote_data->rocker_l_ / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
+        // 右摇杆 X轴 → 旋转角速度 vw
+        vw = 0;
+
+        // 死区
+        if (fabsf(vx) < REMOTE_DEADBAND) vx = 0.0f;
+        if (fabsf(vy) < REMOTE_DEADBAND) vy = 0.0f;
+        if (fabsf(vw) < REMOTE_DEADBAND) vw = 0.0f;
+    }
+
+    SteeringWheelKinematics(vx, vy, vw);
+		
+		
+//	DJIMotorSetRef(motor_steering_rf,STEERING_CHASSIS_ALIGN_ANGLE_1);
+//	DJIMotorSetRef(motor_steering_lf,STEERING_CHASSIS_ALIGN_ANGLE_3);
+//	DJIMotorSetRef(motor_steering_rb,STEERING_CHASSIS_ALIGN_ANGLE_2);
 }

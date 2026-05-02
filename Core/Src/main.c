@@ -32,6 +32,9 @@
 #include "Flash.h"
 #include "usb.h"
 #include "BMI088.h"
+#include "remote.h"
+#include "bsp_dwt.h"
+#include "catch.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -117,9 +120,13 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  g_bmi088_status = BMI088_Init();
+  //g_bmi088_status = BMI088_Init();
   ChassisInit();      // DJIMotorInit() 会调用 FDCANRegister()，自动配置过滤器并启动FDCAN
+	//Test_Init();
 	 USB_Init();
+	  RemoteControlInit();
+		CatchInit();
+		DWT_Init(400);
   /* USER CODE END 2 */
 
   /* Init scheduler */
