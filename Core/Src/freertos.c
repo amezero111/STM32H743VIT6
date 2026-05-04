@@ -30,6 +30,7 @@
 #include "usb.h"
 #include "remote.h" // 新增导入遥控器库
 #include "catch.h"
+#include "arm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -86,6 +87,13 @@ const osThreadAttr_t Catch_Task_attributes = {
   .stack_size = 768 * 4,
   .priority = (osPriority_t) osPriorityBelowNormal,
 };
+/* Definitions for Arm_Task */
+osThreadId_t Arm_TaskHandle;
+const osThreadAttr_t Arm_Task_attributes = {
+  .name = "Arm_Task",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -97,6 +105,7 @@ void DJIMotor(void *argument);
 void Usb_Task(void *argument);
 void StartRemote(void *argument);
 void catch_start(void *argument);
+void Arm_Start(void *argument);
 
 extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -142,6 +151,9 @@ void MX_FREERTOS_Init(void) {
 
   /* creation of Catch_Task */
   Catch_TaskHandle = osThreadNew(catch_start, NULL, &Catch_Task_attributes);
+
+  /* creation of Arm_Task */
+  Arm_TaskHandle = osThreadNew(Arm_Start, NULL, &Arm_Task_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -246,10 +258,29 @@ void catch_start(void *argument)
   /* Infinite loop */
   for(;;)
   {
-		CatchTask();
+		//CatchTask();
     osDelay(1);
   }
   /* USER CODE END catch_start */
+}
+
+/* USER CODE BEGIN Header_Arm_Start */
+/**
+* @brief Function implementing the Arm_Task thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Arm_Start */
+void Arm_Start(void *argument)
+{
+  /* USER CODE BEGIN Arm_Start */
+  /* Infinite loop */
+  for(;;)
+  {
+		Arm_Task();
+    osDelay(1);
+  }
+  /* USER CODE END Arm_Start */
 }
 
 /* Private application code --------------------------------------------------*/

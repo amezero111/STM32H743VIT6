@@ -779,6 +779,11 @@
               <FileType>1</FileType>
               <FilePath>..\MOUDLE\motor\feite_motor.c</FilePath>
             </File>
+            <File>
+              <FileName>dm_motor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\MOUDLE\motor\dm_motor.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -803,6 +808,11 @@
               <FileName>robot_def.h</FileName>
               <FileType>5</FileType>
               <FilePath>..\APPLICATION\robot_def.h</FilePath>
+            </File>
+            <File>
+              <FileName>arm.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\APPLICATION\arm.c</FilePath>
             </File>
           </Files>
         </Group>

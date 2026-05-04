@@ -72,6 +72,7 @@ typedef enum {
     M3508,
     GM6020,
     DM4310,
+    DM4340,
     DM6006,
     DM8009,
 } Motor_Type_e;

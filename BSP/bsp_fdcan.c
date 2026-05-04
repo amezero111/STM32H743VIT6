@@ -320,7 +320,7 @@ static HAL_StatusTypeDef FDCANAddFilter(FDCAN_Instance *instance, FDCAN_Bus_Cont
     if (instance == NULL || bus_ctx == NULL)
         return HAL_ERROR;
 
-    if (instance->rx_id == 0)
+    if (instance->rx_id == 0 && instance->can_module_callback == NULL)
         return HAL_OK;
 
     if (bus_ctx->next_std_filter_idx >= instance->fdcan_handle->Init.StdFiltersNbr)

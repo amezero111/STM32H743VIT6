@@ -35,6 +35,7 @@
 #include "remote.h"
 #include "bsp_dwt.h"
 #include "catch.h"
+#include "arm.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -125,7 +126,8 @@ int main(void)
 	//Test_Init();
 	 USB_Init();
 	  RemoteControlInit();
-		CatchInit();
+		//CatchInit();
+		Arm_Init();
 		DWT_Init(400);
   /* USER CODE END 2 */
 

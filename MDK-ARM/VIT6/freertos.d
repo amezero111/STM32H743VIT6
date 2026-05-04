@@ -69,4 +69,4 @@ vit6/freertos.o: ..\Core\Src\freertos.c \
   ..\Middlewares\ST\STM32_USB_Device_Library\Core\Inc\usbd_core.h \
   ..\Middlewares\ST\STM32_USB_Device_Library\Core\Inc\usbd_ioreq.h \
   ..\Middlewares\ST\STM32_USB_Device_Library\Core\Inc\usbd_ctlreq.h \
-  ..\MOUDLE\remote\remote.h ..\APPLICATION\catch.h
+  ..\MOUDLE\remote\remote.h ..\APPLICATION\catch.h ..\APPLICATION\arm.h
