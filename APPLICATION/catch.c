@@ -61,9 +61,6 @@ static void FeiteMotorsInit(void)
 
     config.id = 3;
     FT_3 = FeiteMotorInit(&config);
-
-    config.id = 4;
-    FT_4 = FeiteMotorInit(&config);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -328,5 +325,5 @@ void CatchTask(void)
     /* 每周期批量下发舵机目标位置 */
     
 	
-	FeiteMotorControl();
+	
 }

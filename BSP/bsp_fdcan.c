@@ -247,9 +247,8 @@ static void FDCANSyncInstanceMode(FDCAN_Instance *instance)
  * @brief 按需启动某一条FDCAN总线
  *
  * @note  启动前统一配置全局过滤器:
- *        - 非匹配标准/扩展帧全部拒绝
- *        - 遥控帧全部拒绝
- *        这样总线只会接收显式注册过的ID
+ *        - 所有标准数据帧接收至 FIFO0，由软件查表 (std_registry) 分发
+ *        - 扩展帧/遥控帧全部拒绝
  */
 static HAL_StatusTypeDef FDCANEnsureBusStarted(FDCAN_Bus_Context_s *bus_ctx)
 {
@@ -262,7 +261,7 @@ static HAL_StatusTypeDef FDCANEnsureBusStarted(FDCAN_Bus_Context_s *bus_ctx)
         return HAL_OK;
 
     if (HAL_FDCAN_ConfigGlobalFilter(bus_ctx->handle,
-                                     FDCAN_REJECT,
+                                     FDCAN_ACCEPT_IN_RX_FIFO0,
                                      FDCAN_REJECT,
                                      FDCAN_REJECT_REMOTE,
                                      FDCAN_REJECT_REMOTE) != HAL_OK) {
@@ -298,57 +297,9 @@ static HAL_StatusTypeDef FDCANEnsureBusStarted(FDCAN_Bus_Context_s *bus_ctx)
     bus_ctx->started = 1;
     if (debug_bus != NULL) {
         debug_bus->started = 1U;
-        debug_bus->next_std_filter_idx = bus_ctx->next_std_filter_idx;
         debug_bus->start_ok_count++;
         debug_bus->last_hal_status = HAL_OK;
         debug_bus->last_error_code = bus_ctx->handle->ErrorCode;
-    }
-    return HAL_OK;
-}
-
-/**
- * @brief 添加过滤器以实现对特定id的报文的接收
- *
- * @note  仅为真正需要接收的实例配置过滤器。
- *        发送专用实例(rx_id=0)不会占用过滤器。
- */
-static HAL_StatusTypeDef FDCANAddFilter(FDCAN_Instance *instance, FDCAN_Bus_Context_s *bus_ctx)
-{
-    FDCAN_FilterTypeDef filter_config = {0};
-    volatile FDCAN_Debug_Bus_s *debug_bus = FDCANGetDebugBus(instance == NULL ? NULL : instance->fdcan_handle);
-
-    if (instance == NULL || bus_ctx == NULL)
-        return HAL_ERROR;
-
-    if (instance->rx_id == 0 && instance->can_module_callback == NULL)
-        return HAL_OK;
-
-    if (bus_ctx->next_std_filter_idx >= instance->fdcan_handle->Init.StdFiltersNbr)
-        return HAL_ERROR;
-
-    filter_config.IdType = FDCAN_STANDARD_ID;
-    filter_config.FilterIndex = bus_ctx->next_std_filter_idx;
-    filter_config.FilterType = FDCAN_FILTER_MASK;
-    filter_config.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-    filter_config.FilterID1 = instance->rx_id;
-    filter_config.FilterID2 = 0x7FF; // 11位全掩码,精确匹配单个标准ID
-
-    if (HAL_FDCAN_ConfigFilter(instance->fdcan_handle, &filter_config) != HAL_OK) {
-        if (debug_bus != NULL) {
-            debug_bus->filter_fail_count++;
-            debug_bus->last_hal_status = HAL_ERROR;
-            debug_bus->last_error_code = instance->fdcan_handle->ErrorCode;
-            debug_bus->next_std_filter_idx = bus_ctx->next_std_filter_idx;
-        }
-        return HAL_ERROR;
-    }
-
-    bus_ctx->next_std_filter_idx++;
-    if (debug_bus != NULL) {
-        debug_bus->filter_ok_count++;
-        debug_bus->last_hal_status = HAL_OK;
-        debug_bus->last_error_code = instance->fdcan_handle->ErrorCode;
-        debug_bus->next_std_filter_idx = bus_ctx->next_std_filter_idx;
     }
     return HAL_OK;
 }
@@ -425,11 +376,6 @@ FDCAN_Instance *FDCANRegister(FDCAN_Init_Config_s *config)
     fdcan->tx_data_length = 8;
 
     FDCANSyncInstanceMode(fdcan);
-
-    if (FDCANAddFilter(fdcan, bus_ctx) != HAL_OK) {
-        free(fdcan);
-        return NULL;
-    }
 
     if (FDCANEnsureBusStarted(bus_ctx) != HAL_OK) {
         free(fdcan);

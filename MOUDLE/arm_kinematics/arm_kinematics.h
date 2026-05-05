@@ -12,8 +12,8 @@
 /* 根据实际机械结构修改 */
 #define ARM_J1_MIN_DEG -180.0f
 #define ARM_J1_MAX_DEG 180.0f
-#define ARM_J2_MIN_DEG -150.0f
-#define ARM_J2_MAX_DEG 150.0f
+#define ARM_J2_MIN_DEG -180.0f
+#define ARM_J2_MAX_DEG 180.0f
 #define ARM_J3_MIN_DEG -180.0f
 #define ARM_J3_MAX_DEG 180.0f
 
@@ -46,7 +46,7 @@ typedef enum {
 Arm_Position_t Arm_FK(Arm_JointAngles_t angles);
 
 /**
- * @brief 逆运动学: 末端位姿 → 关节角度
+ * @brief 逆运动学: 末端位置 → 关节角度 (仅 J1/J2, 忽略 J3)
  * @param target      目标末端位姿
  * @param angles_out  输出关节角度
  * @param elbow       肘部构型选择

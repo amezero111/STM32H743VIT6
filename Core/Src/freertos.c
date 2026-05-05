@@ -31,6 +31,7 @@
 #include "remote.h" // 新增导入遥控器库
 #include "catch.h"
 #include "arm.h"
+#include "feite_motor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -201,6 +202,7 @@ void DJIMotor(void *argument)
   for(;;)
   {
 		DJIMotorControl(); 
+		FeiteMotorControl();
     osDelay(1);
   }
   /* USER CODE END DJIMotor */

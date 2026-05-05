@@ -721,6 +721,8 @@ static void DecodeDMMotor(FDCAN_Instance *fdcan_instance)
         measure->speed_aps = vel_rad_s * RAD_2_DEGREE;
         measure->total_round = 0;
         measure->total_angle = measure->angle_single_round;
+        /* 首帧将目标锁到当前位置,避免上电回零转圈 */
+        motor->motor_controller.pid_ref = measure->angle_single_round;
         motor->feedback_initialized = 1U;
         motor->feedback_updated = 1U;
 

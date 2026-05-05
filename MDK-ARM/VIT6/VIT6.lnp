@@ -23,6 +23,7 @@
 "vit6\remote.o"
 "vit6\feite_motor.o"
 "vit6\dm_motor.o"
+"vit6\arm_kinematics.o"
 "vit6\test.o"
 "vit6\chasis.o"
 "vit6\catch.o"
