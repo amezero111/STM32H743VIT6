@@ -14,12 +14,16 @@
 /* ===================== 电机实例 ===================== */
 
 static DMMotor_Instance *motor_j1;    /* 大臂 DM4340 */
-static FeiteMotor_Instance *motor_j3; /* 末端舵机, ID=4 */
-static HEMotor_Instance *motor_he;    /* 幻尔舵机 */
+static HEMotor_Instance *motor_j3;    /* 末端舵机 (幻尔), ID=4, USART1 */
+static HEMotor_Instance *motor_he;    /* 幻尔跟随舵机, ID=4, USART2 */
 
 /* HE 舵机参数 */
-#define HE_INIT_POS      94.0f  /* 初始发送值 (垂直) */
-#define HE_RAW_PER_DEG   4.17f  /* 达妙每转 1 度，HE 发送值变化 4.17 */
+#define HE_INIT_POS      470.0f  /* 初始发送值 (垂直) */
+#define HE_RAW_PER_DEG   4.17f   /* 达妙每转 1 度，HE 发送值变化 4.17 */
+#define J1_INIT_POS_RAD  (-2.2f) /* 达妙上电初始目标位置 */
+#define J1_RC_STEP_RAD   0.005f  /* 遥控器每周期位置增量 */
+#define J1_MAX_VEL_RAD_S 12.0f   /* 达妙位置速度模式速度上限 */
+#define HE_FOLLOW_TIME   8       /* HE 跟随时间 ms */
 
 /* J2 减速比 & 同步带耦合系数:
  * M3508 内置 1:19 减速器, 编码器测量的是转子角度 (减速前),
@@ -91,19 +95,10 @@ static void Arm_ReadJointAngles(Arm_JointAngles_t *angles)
         angles->j1 = J1_MOTOR_SIGN *
                      (motor_j1->measure.position_rad * RAD_2_DEGREE - j1_zero_offset_deg);
 
-    if (motor_j3)
-        angles->j3 = motor_j3->measure.angle_deg;
+    /* HE 舵机为开环控制，目前不读取反馈角度 */
+    angles->j3 = 0.0f; 
 }
 
-static void Arm_SetAllRefs(Arm_JointAngles_t angles)
-{
-    int16_t j3_raw = (int16_t)(angles.j3 / FEITE_DEFAULT_RAW_TO_DEG);
-    if (motor_j3) {
-        FeiteMotorSetRef(motor_j3, j3_raw);
-        FeiteMotorSetSpeed(motor_j3, 500);
-        FeiteMotorSetAcc(motor_j3, 20);
-    }
-}
 
 /**
  * @brief 2 连杆正运动学: (j1, j2) → 腕点 (L2 末端) 坐标
@@ -132,7 +127,7 @@ void Arm_Init(void)
             .motor_reverse_flag     = MOTOR_DIRECTION_NORMAL,
             .feedback_reverse_flag  = FEEDBACK_DIRECTION_NORMAL,
             .angle_mode             = MOTOR_ANGLE_MODE_SINGLE_TURN,
-            .close_loop_type        = OPEN_LOOP, // 设置为开环，绕过 host 端 PID/Profile
+            .close_loop_type        = OPEN_LOOP, 
         },
         .motor_type = DM4340,
     };
@@ -142,24 +137,17 @@ void Arm_Init(void)
 		DMMotorSetControlMode(motor_j1, DM_MODE_POS_VEL );
     DMMotorEnable(motor_j1);
 
-    DMMotorSetPosVelRef(motor_j1, 0.0f, 10.0f); // 初始位置 0, 最大速度 10 rad/s
+    target_angles.j1 = J1_MOTOR_SIGN * (J1_INIT_POS_RAD * RAD_2_DEGREE);
+    DMMotorSetPosVelRef(motor_j1, J1_INIT_POS_RAD, 4.0f); // 初始位置 -2.2rad
 
-    /* ---- J3: 飞特舵机, USART1, ID=4 ---- */
+    /* ---- J3: 幻尔舵机, USART3, ID=4 ---- */
     {
-        FeiteMotor_Bus_s *bus = FeiteMotorBusInit(NULL);
-
-        FeiteMotor_Init_Config_s j3_config = {
-            .bus = bus,
-            .id = 4,
-            .model = FEITE_MODEL_HLS_SCS,
-            .init_position = 0,
-            .init_speed = 500,
-            .init_acc = 20,
-            .init_torque = 1500,
-            .raw_to_deg = FEITE_DEFAULT_RAW_TO_DEG,
-            .motor_reverse_flag = MOTOR_DIRECTION_NORMAL,
+        HEMotor_Init_Config_s j3_config = {
+            .huart = &huart3,
+            .motor_config = { .id = 4, .cmd = SERVO_MOVE_TIME_WRITE },
+            .motor_ref = { .position = 500, .time = 100, .stop_flag = HE_ENABLED },
         };
-        motor_j3 = FeiteMotorInit(&j3_config);
+        motor_j3 = HEMotorInit(&j3_config);
     }
 
     /* ---- HE: 幻尔舵机, USART1, ID=4 ---- */
@@ -183,19 +171,21 @@ void Arm_Task(void)
     arm_debug.current = current_angles;
     arm_debug.sw = sw;
 
-    /* 简化逻辑：不再使用复杂的初始化状态机，直接进入运行模式 */
+    /* 简化逻辑：使用绝对坐标系，并保持初始化目标为 -2.2rad */
     if (motor_j1 && motor_j1->feedback_initialized && !j1_zero_inited) {
-        j1_zero_offset_deg = motor_j1->measure.position_rad * RAD_2_DEGREE;
+        j1_zero_offset_deg = 0.0f;
         j1_zero_inited = 1;
-        target_angles = current_angles; /* 首次锁定当前位置为目标，避免切入时跳变 */
+        target_angles.j1 = J1_MOTOR_SIGN * (J1_INIT_POS_RAD * RAD_2_DEGREE);
+        target_angles.j2 = current_angles.j2;
+        target_angles.j3 = current_angles.j3;
     }
 
     /* 遥控器控制: sw1=停止, sw2=手动控制达妙电机(J1), sw3=保持当前位置 */
     if (sw == 1) {
         target_angles = current_angles;
-        DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, 0.0f);
+        DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, 0.0f);
     } else if (sw == 2) {
-        float j1_step_rad = (float)remote_data->rocker_r1 / 660.0f * 0.003f;
+        float j1_step_rad = (float)remote_data->rocker_r1 / 660.0f * J1_RC_STEP_RAD;
 
         if (fabsf(j1_step_rad) < 0.0002f)
             j1_step_rad = 0.0f;
@@ -205,21 +195,21 @@ void Arm_Task(void)
         if (target_angles.j1 > 180.0f) target_angles.j1 = 180.0f;
         if (target_angles.j1 < -180.0f) target_angles.j1 = -180.0f;
 
-        DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, 10.0f);
+        DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, J1_MAX_VEL_RAD_S);
     } else {
-        DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, 10.0f);
+        DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, J1_MAX_VEL_RAD_S);
     }
 
     arm_debug.target = target_angles;
 
-    /* HE 舵机按 J1 目标角度同向跟随：若方向仍不对，再改回减号即可 */
+    /* HE 舵机按 J1 目标角度反向跟随 */
     if (motor_he) {
         float he_follow_deg = target_angles.j1;
-        float he_pos = HE_INIT_POS + he_follow_deg * HE_RAW_PER_DEG;
+        float he_pos = HE_INIT_POS - he_follow_deg * HE_RAW_PER_DEG;
         if (he_pos > 1000.0f) he_pos = 1000.0f;
         if (he_pos < 0.0f) he_pos = 0.0f;
         motor_he->ref.position = (uint16_t)(he_pos + 0.5f);
-        motor_he->ref.time = 10;
+        motor_he->ref.time = HE_FOLLOW_TIME;
         arm_debug.he_follow_deg = he_follow_deg;
         arm_debug.he_cmd_pos = he_pos;
     }
