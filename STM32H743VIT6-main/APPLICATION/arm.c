@@ -38,6 +38,8 @@ static HEMotor_Instance *motor_he;    /* 幻尔舵机 */
 #define J2_COUPLING_RATIO     1.0f
 #define J2_HOME_ANGLE_DEG     180.0f
 #define J1_MOTOR_SIGN         -1.0f
+#define J1_INIT_POS_RAD       -2.2f
+#define J1_POS_VEL_SPEED_RAD_S 10.0f
 
 /* ===================== 状态机 ===================== */
 
@@ -163,7 +165,8 @@ void Arm_Init(void)
 		DMMotorSetControlMode(motor_j1, DM_MODE_POS_VEL );
     DMMotorEnable(motor_j1);
 
-    DMMotorSetPosVelRef(motor_j1, 0.0f, 10.0f); // 初始位置 0, 最大速度 10 rad/s
+    target_angles.j1 = J1_INIT_POS_RAD * RAD_2_DEGREE;
+    DMMotorSetPosVelRef(motor_j1, J1_INIT_POS_RAD, J1_POS_VEL_SPEED_RAD_S); // 初始位置 -2.2rad
 
     /* ---- J3: 飞特舵机, USART1, ID=4 ---- */
     {
@@ -215,7 +218,6 @@ void Arm_Task(void)
     if (motor_j1 && motor_j1->feedback_initialized && !j1_zero_inited) {
         j1_zero_offset_deg = motor_j1->measure.position_rad * RAD_2_DEGREE;
         j1_zero_inited = 1;
-        target_angles = current_angles; /* 首次锁定当前位置为目标，避免切入时跳变 */
     }
 
     /* 遥控器控制: sw1=停止, sw2=手动控制达妙电机(J1), sw3=保持当前位置 */
@@ -223,7 +225,7 @@ void Arm_Task(void)
         target_angles = current_angles;
         DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, 0.0f);
     } else if ((sw == 2) && (remote_data != NULL)) {
-        float j1_step_rad = (float)remote_data->rocker_r1 / 660.0f * 0.003f;
+        float j1_step_rad = (float)remote_data->rocker_r1 / 660.0f * 0.02f;
 
         if (fabsf(j1_step_rad) < 0.0002f)
             j1_step_rad = 0.0f;
@@ -233,9 +235,9 @@ void Arm_Task(void)
         if (target_angles.j1 > 180.0f) target_angles.j1 = 180.0f;
         if (target_angles.j1 < -180.0f) target_angles.j1 = -180.0f;
 
-        DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, 10.0f);
+        DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, J1_POS_VEL_SPEED_RAD_S);
     } else {
-        DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, 10.0f);
+        DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, J1_POS_VEL_SPEED_RAD_S);
     }
 
     arm_debug.target = target_angles;
