@@ -1,0 +1,70 @@
+129:    switch (motor->motor_type) {
+156:            motor->message_num = motor_send_num;
+157:            motor->sender_group = motor_grouping;
+183:            motor->message_num = motor_send_num;
+184:            motor->sender_group = motor_grouping;
+208:        if (motor == NULL || motor->motor_fdcan_instance == NULL)
+211:        if (motor->motor_fdcan_instance == fdcan_instance)
+214:        if (motor->motor_fdcan_instance->fdcan_handle == fdcan_instance->fdcan_handle &&
+215:            motor->motor_fdcan_instance->rx_id == fdcan_instance->rx_id) {
+228:    if (motor == NULL || motor->motor_fdcan_instance == NULL)
+231:    motor->motor_fdcan_instance->can_module_callback = DecodeDJIMotor;
+232:    motor->motor_fdcan_instance->id = motor;
+456:    measure = &motor->measure;
+458:    if (motor->daemon != NULL) {
+459:        DaemonReload(motor->daemon);
+461:    motor->dt = DWT_GetDeltaT(&motor->feed_cnt);
+476:    if (motor->feedback_initialized == 0U) {
+485:        motor->feedback_initialized = 1U;
+486:        motor->feedback_updated = 1U;
+493:        g_dji_motor_debug.last_sender_group = motor->sender_group;
+494:        g_dji_motor_debug.last_message_num = motor->message_num;
+497:        g_dji_motor_debug.last_feedback_dt_ms = motor->dt * 1000.0f;
+514:    if (motor->dt > 0.0f) {
+518:            speed_from_ecd = (ECD_ANGLE_COEF_DJI * (float)ecd_delta) / motor->dt;
+535:    motor->feedback_updated = 1U;
+542:    g_dji_motor_debug.last_sender_group = motor->sender_group;
+543:    g_dji_motor_debug.last_message_num = motor->message_num;
+546:    g_dji_motor_debug.last_feedback_dt_ms = motor->dt * 1000.0f;
+558:    if (motor == NULL || motor->motor_fdcan_instance == NULL)
+560:    motor->stop_flag                         = MOTOR_STOP;
+561:    uint16_t fdcan_bus __attribute__((unused)) = motor->motor_fdcan_instance->fdcan_handle == &hfdcan1 ? 1 : 2;
+609:    motor->motor_type     = config->motor_type;
+610:    motor->motor_settings = config->controller_setting_init_config;
+613:    PIDInit(&motor->motor_controller.current_PID, &config->controller_param_init_config.current_PID);
+614:    PIDInit(&motor->motor_controller.speed_PID, &config->controller_param_init_config.speed_PID);
+615:    PIDInit(&motor->motor_controller.angle_PID, &config->controller_param_init_config.angle_PID);
+616:    motor->motor_controller.other_angle_feedback_ptr = config->controller_param_init_config.other_angle_feedback_ptr;
+617:    motor->motor_controller.other_speed_feedback_ptr = config->controller_param_init_config.other_speed_feedback_ptr;
+618:    motor->motor_controller.current_feedforward_ptr  = config->controller_param_init_config.current_feedforward_ptr;
+619:    motor->motor_controller.speed_feedforward_ptr    = config->controller_param_init_config.speed_feedforward_ptr;
+633:    motor->motor_fdcan_instance    = FDCANRegister(&can_config);
+634:    if (motor->motor_fdcan_instance == NULL) {
+650:    motor->daemon = DaemonRegister(&daemon_config);
+651:    if (motor->daemon == NULL) {
+652:        motor->motor_fdcan_instance->can_module_callback = NULL;
+653:        motor->motor_fdcan_instance->id = NULL;
+668:    g_dji_motor_debug.last_init_sender_group = motor->sender_group;
+669:    g_dji_motor_debug.last_init_message_num = motor->message_num;
+678:    motor->stop_flag = MOTOR_ENALBED;
+686:    motor->stop_flag = MOTOR_STOP;
+692:        motor->motor_settings.angle_feedback_source      = type;
+693:        motor->motor_controller.other_angle_feedback_ptr = ptr;
+695:        motor->motor_settings.speed_feedback_source      = type;
+696:        motor->motor_controller.other_speed_feedback_ptr = ptr;
+705:    motor->motor_settings.outer_loop_type = outer_loop;
+713:    motor->motor_controller.pid_ref = ref;
+721:    motor->measure.total_ecd_offset = motor->measure.total_ecd_raw;
+722:    motor->measure.total_ecd = 0;
+723:    motor->measure.zero_offset = motor->measure.total_angle + motor->measure.zero_offset;
+748:        if (motor == NULL || motor->motor_fdcan_instance == NULL)
+753:        motor_setting    = &motor->motor_settings;
+754:        motor_controller = &motor->motor_controller;
+755:        measure          = &motor->measure;
+756:        set              = motor->last_set;
+759:        if (!control_needs_feedback || motor->feedback_updated) {
+814:            motor->last_set = set;
+816:                motor->feedback_updated = 0U;
+821:        group                                         = motor->sender_group;
+822:        num                                           = motor->message_num;
+835:        if (motor->stop_flag == MOTOR_STOP) {

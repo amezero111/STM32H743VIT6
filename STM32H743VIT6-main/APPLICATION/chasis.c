@@ -697,16 +697,16 @@ void ChassisTask(void)
         imu_dt_s = CHASSIS_IMU_DT_FALLBACK_S;
     }
     ChassisIMU_Update(imu_dt_s);
-
+//目前改成右摇杆
     if (remote_data != NULL) {
         // Left stick X is mounted as the forward/back channel on this remote.
         // Pushing forward makes rocker_l_ negative, so map it to positive vx.
-        vx = -(float)remote_data->rocker_l_ / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
+        vx = -(float)remote_data->rocker_r_ / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
         // Left stick Y is used as the lateral channel.
-        vy = (float)remote_data->rocker_l1 / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
-        // 右摇杆 R/R1 不再控制底盘旋转，保留左摇杆平移控制。
-         vw = (float)remote_data->rocker_r_ / REMOTE_STICK_RANGE * REMOTE_MAX_ANGULAR;
-        vw = 0.0f;
+        vy = (float)remote_data->rocker_r1 / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
+        // dial恢复控制并且加个系数
+         vw = (float)remote_data->dial / REMOTE_STICK_RANGE * REMOTE_MAX_ANGULAR*0.5f;
+        
 
         // 死区
         if (fabsf(vx) < REMOTE_DEADBAND) vx = 0.0f;

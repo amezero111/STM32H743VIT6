@@ -129,7 +129,7 @@ int main(void)
 	//Test_Init();
 	 USB_Init();
 	  RemoteControlInit();
-		CatchInit();
+	//	CatchInit();
 		Arm_Init();
   /* USER CODE END 2 */
 

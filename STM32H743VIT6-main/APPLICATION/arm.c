@@ -225,7 +225,7 @@ void Arm_Task(void)
         target_angles = current_angles;
         DMMotorSetPosVelRef(motor_j1, target_angles.j1 * DEGREE_2_RAD, 0.0f);
     } else if ((sw == 2) && (remote_data != NULL)) {
-        float j1_step_rad = (float)remote_data->rocker_r1 / 660.0f * 0.02f;
+      float j1_step_rad = 0 ; //(float)remote_data->rocker_r1 / 660.0f * 0.02f;
 
         if (fabsf(j1_step_rad) < 0.0002f)
             j1_step_rad = 0.0f;

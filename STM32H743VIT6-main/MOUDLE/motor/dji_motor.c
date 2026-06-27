@@ -9,8 +9,8 @@
 static uint8_t MotorSenderGrouping(DJIMotor_Instance *motor, FDCAN_Init_Config_s *fdcan_config);
 static void DecodeDJIMotor(FDCAN_Instance *fdcan_instance);
 static void DJIMotorLostCallback(void *motor_ptr);
-static uint8_t InitSenderInstances(void);
 static FDCAN_Instance *RegisterSenderInstance(FDCAN_HandleTypeDef *fdcan_handle, uint32_t tx_id);
+static uint8_t EnsureSenderInstance(uint8_t sender_group);
 static void ClearSenderFrames(void);
 static DJIMotor_Instance *FindMotorByFdcanInstance(FDCAN_Instance *fdcan_instance);
 static void RefreshMotorFdcanBinding(DJIMotor_Instance *motor);
@@ -25,11 +25,22 @@ static uint8_t DJISendFrameDirect(FDCAN_Instance *sender_instance);
 
 /* ------------------------------------------ 变量声明  --------------------------------------- */
 static uint8_t idx = 0; // register idx,是该文件的全局电机索引,在注册时使用
-static uint8_t sender_initialized = 0; // 发送实例初始化标志
-
 /* DJI电机的实例,此处仅保存指针,内存的分配将通过电机实例初始化时通过malloc()进行 */
 static DJIMotor_Instance *dji_motor_instances[DJI_MOTOR_CNT] = {NULL};
 volatile DJIMotor_Debug_s g_dji_motor_debug = {0};
+
+static const struct
+{
+    FDCAN_HandleTypeDef *fdcan_handle;
+    uint32_t tx_id;
+} sender_map[6] = {
+    {&hfdcan1, 0x1FF},
+    {&hfdcan1, 0x200},
+    {&hfdcan1, 0x2FF},
+    {&hfdcan2, 0x1FF},
+    {&hfdcan2, 0x200},
+    {&hfdcan2, 0x2FF},
+};
 
 /**
  * @brief 由于DJI电机发送以四个一组的形式进行,故对其进行特殊处理,用6个(2fdcan*3group)fdcan_instance专门负责发送
@@ -60,8 +71,8 @@ static FDCAN_Instance *RegisterSenderInstance(FDCAN_HandleTypeDef *fdcan_handle,
     FDCAN_Init_Config_s sender_config = {
         .fdcan_handle = fdcan_handle,
         .tx_id = tx_id,
-        .rx_id = 0,  // 发送专用,不接收
-        .use_canfd = 0,  // 经典CAN模式
+        .rx_id = 0,      // tx-only sender
+        .use_canfd = 0,  // classic CAN
         .can_module_callback = NULL,
         .id = NULL,
     };
@@ -75,37 +86,25 @@ static FDCAN_Instance *RegisterSenderInstance(FDCAN_HandleTypeDef *fdcan_handle,
 }
 
 /**
- * @brief 初始化发送实例数组,在第一个电机注册时调用
+ * @brief Lazily create only the sender group required by the current motor.
  */
-static uint8_t InitSenderInstances(void)
+static uint8_t EnsureSenderInstance(uint8_t sender_group)
 {
-    static const struct
-    {
-        FDCAN_HandleTypeDef *fdcan_handle;
-        uint32_t tx_id;
-    } sender_map[6] = {
-        {&hfdcan1, 0x1FF},
-        {&hfdcan1, 0x200},
-        {&hfdcan1, 0x2FF},
-        {&hfdcan2, 0x1FF},
-        {&hfdcan2, 0x200},
-        {&hfdcan2, 0x2FF},
-    };
-    size_t i;
-
-    for (i = 0; i < 6; ++i) {
-        if (sender_assignment[i] == NULL) {
-            sender_assignment[i] = RegisterSenderInstance(sender_map[i].fdcan_handle, sender_map[i].tx_id);
-        }
-
-        if (sender_assignment[i] == NULL) {
-            g_dji_motor_debug.last_init_stage = 1U;
-            return 0;
-        }
+    if (sender_group >= 6U) {
+        return 0U;
     }
 
-    sender_initialized = 1;
-    return 1;
+    if (sender_assignment[sender_group] == NULL) {
+        sender_assignment[sender_group] = RegisterSenderInstance(sender_map[sender_group].fdcan_handle,
+                                                                 sender_map[sender_group].tx_id);
+    }
+
+    if (sender_assignment[sender_group] == NULL) {
+        g_dji_motor_debug.last_init_stage = 1U;
+        return 0U;
+    }
+
+    return 1U;
 }
 
 /**
@@ -141,7 +140,7 @@ static uint8_t MotorSenderGrouping(DJIMotor_Instance *motor, FDCAN_Init_Config_s
             // 计算接收id
             fdcan_config->rx_id = 0x200 + motor_id + 1; // 把ID+1,进行分组设置
             // 检查id是否冲突
-            if (sender_assignment[motor_grouping] == NULL)
+            if (!EnsureSenderInstance(motor_grouping))
                 return 0;
 
             for (i = 0; i < idx; ++i) {
@@ -168,7 +167,7 @@ static uint8_t MotorSenderGrouping(DJIMotor_Instance *motor, FDCAN_Init_Config_s
             }
 
             fdcan_config->rx_id                = 0x204 + motor_id + 1; // 把ID+1,进行分组设置
-            if (sender_assignment[motor_grouping] == NULL)
+            if (!EnsureSenderInstance(motor_grouping))
                 return 0;
 
             for (i = 0; i < idx; ++i) {
@@ -592,13 +591,6 @@ DJIMotor_Instance *DJIMotorInit(Motor_Init_Config_s *config)
         return NULL;
     }
 
-    // 第一次调用时初始化发送实例
-    if (!sender_initialized && !InitSenderInstances()) {
-        g_dji_motor_debug.init_fail_count++;
-        g_dji_motor_debug.last_init_stage = 3U;
-        return NULL;
-    }
-    
     if (idx >= DJI_MOTOR_CNT) {
         g_dji_motor_debug.init_fail_count++;
         g_dji_motor_debug.last_init_stage = 4U;
