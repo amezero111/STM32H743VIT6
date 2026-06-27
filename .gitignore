@@ -1,4 +1,4 @@
-# MDK-ARM build artifacts (contain absolute paths, must not be committed)
+# Keil MDK build artifacts. These contain absolute paths and should be rebuilt locally.
 MDK-ARM/VIT6/*.o
 MDK-ARM/VIT6/*.d
 MDK-ARM/VIT6/*.crf
@@ -13,18 +13,19 @@ MDK-ARM/VIT6/*.iex
 MDK-ARM/VIT6/*.lnp
 MDK-ARM/VIT6/*.sct
 MDK-ARM/VIT6/*.Bak
+MDK-ARM/VIT6/*.lst
 MDK-ARM/*.lst
 
-# Keil per-user GUI state (contains absolute paths)
+# Keil per-user GUI/debug state. These also often contain absolute local paths.
 MDK-ARM/*.uvguix.*
 MDK-ARM/*.guix.*
-
-# Local IDE / assistant state
-.vscode/
-.claude/
 MDK-ARM/.vscode/
 
-# Local test and build logs
+# Local IDE / assistant state.
+.vscode/
+.claude/
+
+# Local build logs and temporary test files.
 outputs/
 *.log
 test_nan.c

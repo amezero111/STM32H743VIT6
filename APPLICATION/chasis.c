@@ -699,9 +699,9 @@ void ChassisTask(void)
     ChassisIMU_Update(imu_dt_s);
 
     if (remote_data != NULL) {
-        // Right stick controls translation, dial controls chassis rotation.
-        vx = -(float)remote_data->rocker_r_ / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
-        vy = (float)remote_data->rocker_r1 / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
+        // Left stick controls translation, dial controls chassis rotation.
+        vx = -(float)remote_data->rocker_l_ / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
+        vy = (float)remote_data->rocker_l1 / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
         vw = (float)remote_data->dial / REMOTE_STICK_RANGE * REMOTE_MAX_ANGULAR * 0.5f;
 
         // 死区
