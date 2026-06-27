@@ -9,7 +9,23 @@ MDK-ARM/VIT6/*.map
 MDK-ARM/VIT6/*.dep
 MDK-ARM/VIT6/*.lib
 MDK-ARM/VIT6/*.elf
+MDK-ARM/VIT6/*.iex
+MDK-ARM/VIT6/*.lnp
+MDK-ARM/VIT6/*.sct
+MDK-ARM/VIT6/*.Bak
+MDK-ARM/*.lst
 
 # Keil per-user GUI state (contains absolute paths)
 MDK-ARM/*.uvguix.*
 MDK-ARM/*.guix.*
+
+# Local IDE / assistant state
+.vscode/
+.claude/
+MDK-ARM/.vscode/
+
+# Local test and build logs
+outputs/
+*.log
+test_nan.c
+test_nan.exe
