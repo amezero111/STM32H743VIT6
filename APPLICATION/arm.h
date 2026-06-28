@@ -20,8 +20,13 @@ typedef struct {
     uint8_t arm_ready_key_pressed;
     uint8_t arm_ready_reached;
     uint8_t arm_ready_switch_snapshot;
+    uint8_t arm_control_active;
     uint8_t kfs_mode;
     uint16_t kfs_height_mm;
+    uint8_t delivery_origin_switch;
+    uint8_t yaw_toggle_latched;
+    uint8_t delivery_trigger_latched;
+    uint32_t delivery_elapsed_ms;
     float j1_preset_deg;
     float j1_trim_deg;
     float j1_preset_target_deg;
@@ -35,6 +40,7 @@ typedef struct {
     uint16_t he_yaw_cmd_pos;
     uint8_t he_pitch_state;
     uint8_t he_yaw_state;
+    uint16_t suction_move_time_ms;
     uint32_t he_direct_send_count;
     uint32_t he_direct_move_count;
     uint32_t he_direct_load_count;

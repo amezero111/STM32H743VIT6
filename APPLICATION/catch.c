@@ -9,7 +9,7 @@
  *
  * 控制流程 (CatchTask):
  *   1. LiftInit() —— 两段式机械归零:M2006 先回零,然后 M3508 靠堵转电流检测回零
- *   2. 检测遥控器 switch_left == 2 进入抓取模式
+ *   2. 检测遥控器 switch_left == 1 进入抓取模式
  *   3. 摇杆(rocker_r1)按下→夹取(FeiteCatch),松开→张开(FeiteOpen)
  *   4. 每周期末尾调用 FeiteMotorControl() 批量下发舵机位置
  */
@@ -20,6 +20,8 @@
 #include "feite_motor.h"
 #include "DJI_motor.h"
 #include "cmsis_os.h"
+
+#define CATCH_REMOTE_SWITCH_ON 1U
 
 /* 飞特舵机实例: FT_1~FT_3 控制夹具, FT_4 预留 */
 static FeiteMotor_Instance *FT_1, *FT_2, *FT_3, *FT_4;
@@ -267,7 +269,7 @@ void CatchInit(void)
  *
  * 由 RTOS 任务周期调用, 内部状态机包含:
  *   - 两段式归零 (LiftInit)
- *   - 遥控器 switch_left=2 时响应摇杆抓取/释放
+ *   - 遥控器 switch_left=1 时响应摇杆抓取/释放
  *   - 夹取后延时 1500ms 将 M3508 抬至 10000 完成提取动作
  */
 void CatchTask(void)
@@ -298,7 +300,7 @@ LiftInit();
 // DJIMotorSetRef(DJM2006,8300);
 //	
 //}
-    if (remote_data->switch_left == 2) {
+    if (remote_data->switch_left == CATCH_REMOTE_SWITCH_ON) {
         const uint8_t rocker_pressed = (remote_data->rocker_r1 < -500);
         
 

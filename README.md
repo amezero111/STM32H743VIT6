@@ -1,6 +1,6 @@
 # TLS R1 Full Version Backup Keil
 
-本分支是 RoboCon 2026 车控工程在 2026-06-28 的 Keil 备份版本，用于给队友和下一届同学交接。工程基于 STM32H743VIT6，使用 Keil MDK ARM Compiler 6.24，主要包含底盘、达妙机械臂底部俯仰、幻尔总线舵机吸盘姿态、气路继电器、遥控器解析、USB/协议、BMI088/IMU 等模块。
+本分支是 RoboCon 2026 车控工程在 2026-06-29 的 Keil 备份版本，用于给队友和下一届同学交接。工程基于 STM32H743VIT6，使用 Keil MDK ARM Compiler 6.24，主要包含底盘、达妙机械臂底部俯仰、幻尔总线舵机吸盘姿态、气路继电器、遥控器解析、USB/协议、BMI088/IMU 等模块。
 
 这份 README 写得很细，目的不是“好看”，而是让接手的人少踩坑。第一次打开工程请先完整看完“当前硬件状态”和“已知问题”，尤其是幻尔总线舵机部分。
 
@@ -8,11 +8,13 @@
 
 当前工程已经合并了底盘队友的新版底盘控制：左摇杆控制底盘平移，拨轮 `dial` 控制底盘旋转。
 
-机械臂底部达妙电机使用 CAN2，当前能初始化，进入程序后会缓慢到初始化角 `100 deg`，之后可用右拨杆三档选择 200/400/600 高度 KFS 预设，并用右摇杆 Y 轴微调达妙角度。
+机械臂底部达妙电机使用 CAN2，当前能初始化，进入程序后会缓慢到初始化角 `100 deg`。初始化完成后，只有左拨杆 `switch_left == 2` 时才启用机械臂 KFS 流程：右拨杆三档选择 200/400/600 高度 KFS 预设，右摇杆 Y 轴微调达妙角度，右摇杆 X 轴负责吸盘左右换向和 KFS 传递流程。
 
 气路已经加入：`PC8` 控制气泵继电器，`PC2` 控制电磁阀继电器，高电平导通，低电平关闭。当前用左拨杆 `switch_left == 2` 时气泵和电磁阀同时打开。
 
-幻尔总线舵机代码已经按旧工程的总线协议逻辑整理过，使用 USART2 115200，ID1 为吸盘俯仰，ID2 为吸盘左右旋转。但是注意：截至本 README 写入时，现场测试结果仍然是“集成工程里舵机未成功使能/未运动”。代码里已经保留了详细调试变量，后续需要用示波器或逻辑分析仪确认 STM32 USART2_TX 是否真的发出正确波形。
+夹爪/抓取模块已经从左拨杆 `switch_left == 2` 改到左拨杆 `switch_left == 1`，避免和机械臂 KFS 流程抢同一个模式位。
+
+幻尔总线舵机代码已经按旧工程的总线协议逻辑整理过，使用 USART2 115200，ID1 为吸盘俯仰，ID2 为吸盘左右旋转。现场后来确认舵机不动主要是接线接触不良，接线恢复后集成工程可以控制舵机初始化和运动；代码里仍保留了详细调试变量，后续如果再次不动，优先检查 USART2_TX、舵机控制板 RX、电源和共地。
 
 ## 2. 工程如何打开、编译、烧录
 
@@ -355,7 +357,7 @@ J1_READY_REACHED_DEG = 3 deg
 
 ```text
 J1_TARGET_MIN_DEG = -90 deg
-J1_TARGET_MAX_DEG = 130 deg
+J1_TARGET_MAX_DEG = 220 deg
 ```
 
 如果调试时发现达妙方向反了，优先看：
@@ -416,8 +418,26 @@ switch_right = 3 -> 600 mm KFS
 
 ```text
 右摇杆 Y 轴 rocker_r1 -> 微调当前 KFS 档位的达妙目标角
-微调速度 J1_PRESET_TRIM_RATE_DEG_S = 240 deg/s
+微调速度 J1_PRESET_TRIM_RATE_DEG_S = 420 deg/s
 微调最大幅度 J1_PRESET_TRIM_MAX_DEG = +/-15 deg
+```
+
+当前机械臂流程只在左拨杆 `switch_left == 2` 时启用。右摇杆 X 轴是事件触发，不是连续控制：
+
+```text
+rocker_r_ >= +600 -> 吸盘左右舵机在正左 780 / 正右 30 之间切换，1s 内只允许切换一次
+rocker_r_ <= -600 -> 启动 KFS 传递流程
+```
+
+KFS 传递流程：
+
+```text
+1. 达妙从当前角度缓慢转向 210 deg。
+2. 俯仰舵机缓慢转向正上 840。
+3. 左右舵机转向正前 380。
+4. 三者到位后进入传递完成状态，仍然允许右摇杆 Y 轴微调达妙角度。
+5. 如果传递中或传递后切换右拨杆档位，立即中断传递流程并缓慢转向新的 KFS 档位。
+6. 为防误触，切档中断后需要先松开右摇杆 X 轴，才允许下一次换向或传递触发。
 ```
 
 吸盘左右切换：
@@ -503,16 +523,17 @@ SERVO_LOAD_OR_UNLOAD_WRITE = 31
 
 当前 `HEmotor.c` 已经改成“同一条 UART 总线只注册一次，多舵机共享 USART 实例”。原因是旧工程只有一个幻尔舵机，`USARTRegister(&huart2)` 只会调用一次；现在有 ID1/ID2 两个舵机，如果每个舵机都重复注册同一个 `huart2`，会反复启动 USART2 DMA/接收服务，容易引入不可控问题。
 
-### 10.1 当前幻尔舵机未闭环问题
+### 10.1 当前幻尔舵机状态与排查
 
-截至 2026-06-28，现场测试结果是：
+截至 2026-06-29，现场测试结果是：
 
 ```text
 达妙调试程序可控制舵机运动。
-集成工程中，arm_debug 里的发送计数会增加，HAL 状态也可能为 0，但舵机仍未明显使能或运动。
+集成工程也可以控制舵机初始化和运动。
+之前“集成工程中舵机未明显使能或运动”的现象，现场判断大概率来自接线接触不良。
 ```
 
-这说明问题不一定在 C 代码的上层目标值，而可能在以下位置：
+如果后续再次出现舵机不动，不要先盲改上层目标值，优先检查以下位置：
 
 1. USART2_TX 实际波形没有到舵机控制板。
 2. USART2 被 DMA/中断/其他模块重新配置。
@@ -521,7 +542,7 @@ SERVO_LOAD_OR_UNLOAD_WRITE = 31
 5. 只接单向 TX 时，控制板需要额外的方向控制或使能时序。
 6. 舵机电源、共地、控制板供电、电平标准存在问题。
 
-下一步建议不要再盲改代码，优先做硬件信号确认：
+建议优先做硬件信号确认：
 
 ```text
 1. 用示波器或逻辑分析仪测 PA2/USART2_TX。
@@ -600,6 +621,8 @@ arm_debug.sw
 arm_debug.arm_stage
   0 = 上电初始化到 100 deg
   1 = 已进入 KFS 三档选择
+  2 = KFS 传递流程中
+  3 = KFS 传递完成，保持传递姿态并允许右摇杆 Y 微调
 
 arm_debug.arm_ready_reached
   是否已经到达 100 deg 附近并允许进入三档逻辑。
@@ -627,6 +650,18 @@ arm_debug.kfs_mode
 
 arm_debug.kfs_height_mm
   当前 KFS 高度：200/400/600。
+
+arm_debug.arm_control_active
+  左拨杆是否处于机械臂 KFS 模式。1 表示 switch_left == 2。
+
+arm_debug.delivery_origin_switch
+  当前传递流程从哪个右拨杆档位触发。传递中切换右拨杆档位会中断传递并回到新档位。
+
+arm_debug.yaw_toggle_latched / arm_debug.delivery_trigger_latched
+  右摇杆 X 轴事件锁存。用于防止拉到底时反复触发左右换向或传递流程。
+
+arm_debug.delivery_elapsed_ms
+  KFS 传递流程已经运行的时间。
 
 arm_debug.he_pitch_cmd_pos
   ID1 幻尔俯仰舵机目标值。
@@ -814,7 +849,7 @@ FDCAN2:
   rx_id = 0x000
   mode = DM_MODE_POS_VEL
   init target = 100 deg
-  software range = -90 deg to 130 deg
+  software range = -90 deg to 220 deg
 
 幻尔 ID1 pitch:
   USART2
@@ -837,10 +872,12 @@ FDCAN2:
 遥控:
   left stick -> chassis translation
   dial -> chassis rotation
+  left switch == 1 -> catch/claw module
+  left switch == 2 -> arm KFS mode + pump and valve on
   right switch 1/2/3 -> KFS 200/400/600
   right stick Y -> J1 trim
-  right stick X -> suction yaw left/right
-  left switch == 2 -> pump and valve on
+  right stick X left end (+660) -> toggle suction yaw left/right, 1s debounce
+  right stick X right end (-660) -> KFS delivery flow
 ```
 
 ## 18. Git 使用建议
@@ -861,4 +898,4 @@ TLS_R1_FullVersion_Backup_Keil
 5. 硬件验证结果写进 commit message 或 README 的更新记录。
 ```
 
-本 README 不是最终结论，而是当前交接快照。下一位同学如果修好了幻尔舵机，请务必把“未闭环问题”这一节更新成最终原因和解决方式。这样我们不是在代码里留下谜题，而是在项目里留下路径。
+本 README 不是最终结论，而是当前交接快照。下一位同学如果再次遇到幻尔舵机不动，请务必把“当前幻尔舵机状态与排查”这一节更新成最终原因和解决方式。这样我们不是在代码里留下谜题，而是在项目里留下路径。
