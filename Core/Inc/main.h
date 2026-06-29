@@ -65,6 +65,14 @@ void Error_Handler(void);
 #define FLASH_CS_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
+#define CH7_SW2P_Pin GPIO_PIN_7
+#define CH7_SW2P_GPIO_Port GPIOB
+#define CH8_SW2P_Pin GPIO_PIN_9
+#define CH8_SW2P_GPIO_Port GPIOB
+#define CH9_SW2P_Pin GPIO_PIN_14
+#define CH9_SW2P_GPIO_Port GPIOC
+#define CH10_SW2P_Pin GPIO_PIN_13
+#define CH10_SW2P_GPIO_Port GPIOC
 
 /* USER CODE END Private defines */
 

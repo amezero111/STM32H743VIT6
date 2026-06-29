@@ -2,19 +2,23 @@
 
 本分支是 RoboCon 2026 车控工程在 2026-06-29 的 Keil 备份版本，用于给队友和下一届同学交接。工程基于 STM32H743VIT6，使用 Keil MDK ARM Compiler 6.24，主要包含底盘、达妙机械臂底部俯仰、幻尔总线舵机吸盘姿态、气路继电器、遥控器解析、USB/协议、BMI088/IMU 等模块。
 
-这份 README 写得很细，目的不是“好看”，而是让接手的人少踩坑。第一次打开工程请先完整看完“当前硬件状态”和“已知问题”，尤其是幻尔总线舵机部分。
+这份 README 写得很细，目的不是“好看”，而是让接手的人少踩坑。第一次打开工程请先完整看完“当前硬件状态”和“已知问题”，尤其是机械臂遥控映射、气路按键和幻尔总线舵机部分。
+
+最新提交说明：2026-06-29 最后一版机械臂代码恢复为“右拨杆直通三档目标角 + 右摇杆 Y 直接微调目标角”的控制方式，不再把 KFS 档位和微调长期套在软件慢速斜坡里。这样做是为了先恢复现场可控性；如果后续还要做“任意换挡缓慢过渡”，建议单独新开分支实现并充分实车验证。
 
 ## 1. 当前状态一句话版
 
 当前工程已经合并了底盘队友的新版底盘控制：左摇杆控制底盘平移，拨轮 `dial` 控制底盘旋转。
 
-机械臂底部达妙电机使用 CAN2，当前能初始化，进入程序后会缓慢到初始化角 `100 deg`。初始化完成后，只有左拨杆 `switch_left == 2` 时才启用机械臂 KFS 流程：右拨杆三档选择 200/400/600 高度 KFS 预设，右摇杆 Y 轴微调达妙角度，右摇杆 X 轴负责吸盘左右换向和 KFS 传递流程。
+机械臂底部达妙电机使用 CAN2，当前能初始化，进入程序后会缓慢到初始化角 `100 deg`。初始化完成后，只有左拨杆 `switch_left == 2` 时才启用机械臂 KFS 流程：右拨杆三档直接选择 200/400/600 高度 KFS 预设，右摇杆 Y 轴直接微调达妙目标角，右摇杆 X 轴负责吸盘左右换向和 KFS 传递流程。
 
-气路已经加入：`PC8` 控制气泵继电器，`PC2` 控制电磁阀继电器，高电平导通，低电平关闭。当前用左拨杆 `switch_left == 2` 时气泵和电磁阀同时打开。
+气路已经加入：`PC8` 控制气泵继电器，`PC2` 控制电磁阀继电器，高电平导通，低电平关闭。当前只在左拨杆 `switch_left == 2` 的机械臂模式下响应遥控器按键：`KEY[0]` 控制 PC8 气泵，`KEY[1]` 控制 PC2 电磁阀，按键值由遥控器端负责保持 0/1 状态。
 
 夹爪/抓取模块已经从左拨杆 `switch_left == 2` 改到左拨杆 `switch_left == 1`，避免和机械臂 KFS 流程抢同一个模式位。
 
 幻尔总线舵机代码已经按旧工程的总线协议逻辑整理过，使用 USART2 115200，ID1 为吸盘俯仰，ID2 为吸盘左右旋转。现场后来确认舵机不动主要是接线接触不良，接线恢复后集成工程可以控制舵机初始化和运动；代码里仍保留了详细调试变量，后续如果再次不动，优先检查 USART2_TX、舵机控制板 RX、电源和共地。
+
+机械臂按键当前约定：`KEY[2]` 控制“举起/放平”状态，举起目标为 `180 deg`；`KEY[3]` 当前不参与机械臂主流程。曾经临时兼容过 `KEY[3]`，但实测会覆盖右拨杆 KFS 档位，导致看起来“右拨杆无作用”，所以最新代码已恢复为只认 `KEY[2]`。
 
 ## 2. 工程如何打开、编译、烧录
 
@@ -173,7 +177,18 @@ typedef struct {
 } Remote_Data_s;
 ```
 
-当前遥控器没有按键可用，机械臂档位临时全部用左右拨杆和右摇杆完成。
+当前遥控器按键 `KEY[0..3]` 可以被 `remote_data` 接收。注意遥控器端已经做了按键保持：按一次从 0 变 1，再按一次从 1 变 0，所以 STM32 代码直接读取 `remote_data->KEY[i]`，不要再在机械臂代码里做二次边沿翻转。
+
+当前机械臂按键映射：
+
+```text
+KEY[0] -> PC8 气泵继电器，1 开，0 关
+KEY[1] -> PC2 电磁阀继电器，1 开，0 关
+KEY[2] -> KFS 放置举起/放平状态，1 举起到 180 deg，0 回到右拨杆对应 KFS 档位
+KEY[3] -> 当前不参与机械臂主流程，仅保留 Watch 排查
+```
+
+这些按键只在 `switch_left == 2` 的机械臂模式下生效；离开机械臂模式后，气路关闭，机械臂保持当前角度，不再主动回初始化角。
 
 遥控器数值范围：
 
@@ -390,6 +405,8 @@ switch_right = 2 -> 400 mm KFS
 switch_right = 3 -> 600 mm KFS
 ```
 
+当前代码里右拨杆是直通目标控制：`switch_right` 改变后，`target_angles.j1` 直接更新到对应 KFS 角度，达妙用 `DM_MODE_POS_VEL` 的速度参数跟随。之前尝试过软件慢速斜坡，但实车调试时出现“右拨杆看起来无作用、微调极慢”的问题，所以最后一版先恢复为直通目标，优先保证操作手可控。
+
 三档达妙目标角：
 
 ```text
@@ -418,9 +435,13 @@ switch_right = 3 -> 600 mm KFS
 
 ```text
 右摇杆 Y 轴 rocker_r1 -> 微调当前 KFS 档位的达妙目标角
-微调速度 J1_PRESET_TRIM_RATE_DEG_S = 420 deg/s
-微调最大幅度 J1_PRESET_TRIM_MAX_DEG = +/-15 deg
+达妙跟随速度 J1_PRESET_SPEED_RAD_S = 12 rad/s
+微调速度 J1_PRESET_TRIM_RATE_DEG_S = 6720 deg/s
+微调目标软限位 J1_TRIM_TARGET_MIN_DEG = 0 deg
+微调目标软限位 J1_TRIM_TARGET_MAX_DEG = 220 deg
 ```
+
+早期版本还保留过 `J1_PRESET_TRIM_MAX_DEG = +/-15 deg` 的相对档位限幅。最新代码为了现场能覆盖 0 到 220 deg 的调试范围，实际使用 `Arm_LimitTrimTarget()` 把最终目标限制在 0 到 220 deg，而不是只允许档位角附近 +/-15 deg。
 
 当前机械臂流程只在左拨杆 `switch_left == 2` 时启用。右摇杆 X 轴是事件触发，不是连续控制：
 
@@ -428,6 +449,8 @@ switch_right = 3 -> 600 mm KFS
 rocker_r_ >= +600 -> 吸盘左右舵机在正左 780 / 正右 30 之间切换，1s 内只允许切换一次
 rocker_r_ <= -600 -> 启动 KFS 传递流程
 ```
+
+左拨杆离开 `2` 后，机械臂不再主动回 `100 deg` 初始化角，而是保持当前角度并停止机械臂模式控制。这样可以避免切到左拨杆 `1` 的夹爪模式或左拨杆 `3` 时，达妙突然回到约 100/120 deg。
 
 KFS 传递流程：
 
@@ -586,18 +609,19 @@ PC2 -> 电磁阀继电器
 当前遥控逻辑：
 
 ```text
-switch_left == 2 -> 气泵和电磁阀同时打开
-其他档位       -> 气泵和电磁阀同时关闭
+switch_left == 2 且 KEY[0] == 1 -> PC8 气泵继电器打开
+switch_left == 2 且 KEY[1] == 1 -> PC2 电磁阀继电器打开
+switch_left != 2                -> 气泵和电磁阀强制关闭
 ```
 
 当前代码：
 
 ```c
-uint8_t air_on = (remote_data->switch_left == AIR_REMOTE_SWITCH_ON) ? 1U : 0U;
-Arm_AirSet(air_on, air_on);
+Arm_AirSet(arm_buttons[ARM_BUTTON_CH7_INDEX].toggle_state,
+           arm_buttons[ARM_BUTTON_CH8_INDEX].toggle_state);
 ```
 
-如果以后要分开控制气泵和电磁阀，可以把 `Arm_AirSet(pump, valve)` 的两个参数分别接到不同遥控器开关、按键或自动流程上。
+这里的 `ARM_BUTTON_CH7_INDEX` 对应 `KEY[0]`，`ARM_BUTTON_CH8_INDEX` 对应 `KEY[1]`。命名沿用了原来的 CH7/CH8 说法，但当前实际数据来源是 `remote_data->KEY[]`，不是 GPIO 输入。
 
 ## 12. 调试变量
 
@@ -654,6 +678,18 @@ arm_debug.kfs_height_mm
 arm_debug.arm_control_active
   左拨杆是否处于机械臂 KFS 模式。1 表示 switch_left == 2。
 
+arm_debug.remote_key0 / remote_key1 / remote_key2 / remote_key3
+  直接镜像 remote_data->KEY[0..3]，用于确认遥控器按键是否被解析到机械臂任务里。
+
+arm_debug.remote_key_mask
+  KEY 位掩码。KEY[0] 为 0x01，KEY[1] 为 0x02，KEY[2] 为 0x04，KEY[3] 为 0x08。
+
+arm_debug.arm_button_raw_mask / arm_button_pressed_mask / arm_button_toggle_mask
+  机械臂按钮逻辑使用的按键掩码。正常情况下应与 remote_key_mask 一致。
+
+arm_debug.arm_place_raise_active
+  KFS 放置举起状态。1 表示 KEY[2] 置位，达妙目标为 180 deg；0 表示回到右拨杆 KFS 预设。
+
 arm_debug.delivery_origin_switch
   当前传递流程从哪个右拨杆档位触发。传递中切换右拨杆档位会中断传递并回到新档位。
 
@@ -662,6 +698,12 @@ arm_debug.yaw_toggle_latched / arm_debug.delivery_trigger_latched
 
 arm_debug.delivery_elapsed_ms
   KFS 传递流程已经运行的时间。
+
+arm_debug.j1_preset_target_deg
+  当前达妙预设/微调后的目标角，判断右拨杆和右摇杆是否生效时优先看它。
+
+arm_debug.j1_slow_move_cmd_deg
+  历史调试字段。当前最终版已恢复直通目标控制，它通常会被同步为 target.j1，不再作为主控制目标。
 
 arm_debug.he_pitch_cmd_pos
   ID1 幻尔俯仰舵机目标值。
@@ -850,6 +892,9 @@ FDCAN2:
   mode = DM_MODE_POS_VEL
   init target = 100 deg
   software range = -90 deg to 220 deg
+  KFS trim target range = 0 deg to 220 deg
+  preset follow speed = 12 rad/s
+  trim rate = 6720 deg/s
 
 幻尔 ID1 pitch:
   USART2
@@ -868,16 +913,21 @@ FDCAN2:
 气路:
   PC8 pump relay, high active
   PC2 valve relay, high active
+  KEY[0] controls pump in left switch 2
+  KEY[1] controls valve in left switch 2
 
 遥控:
   left stick -> chassis translation
   dial -> chassis rotation
   left switch == 1 -> catch/claw module
-  left switch == 2 -> arm KFS mode + pump and valve on
+  left switch == 2 -> arm KFS mode
+  left switch != 2 -> arm holds current J1 angle and air is off
   right switch 1/2/3 -> KFS 200/400/600
   right stick Y -> J1 trim
   right stick X left end (+660) -> toggle suction yaw left/right, 1s debounce
   right stick X right end (-660) -> KFS delivery flow
+  KEY[2] -> KFS place raise/lower, target 180 deg when active
+  KEY[3] -> unused by arm main flow
 ```
 
 ## 18. Git 使用建议

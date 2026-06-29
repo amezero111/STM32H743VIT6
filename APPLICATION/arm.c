@@ -18,6 +18,14 @@
 #define ARM_CONTROL_SWITCH_ON 2U
 #define AIR_REMOTE_SWITCH_ON  ARM_CONTROL_SWITCH_ON
 
+#define ARM_BUTTON_COUNT       4U
+#define ARM_BUTTON_DEBOUNCE_MS 20U
+#define ARM_BUTTON_CH7_INDEX   0U
+#define ARM_BUTTON_CH8_INDEX   1U
+#define ARM_BUTTON_CH9_INDEX   2U
+#define ARM_BUTTON_CH10_INDEX  3U
+#define ARM_BUTTON_MASK(idx)   ((uint8_t)(1U << (idx)))
+
 /* ===================== 电机实例 ===================== */
 
 static DMMotor_Instance *motor_j1;    /* 大臂 DM4340 */
@@ -55,13 +63,22 @@ static HEMotor_Instance *motor_he;    /* 幻尔舵机 */
 #define J1_INIT_SPEED_RAD_S    0.8f
 #define J1_READY_SPEED_RAD_S   0.8f
 #define J1_READY_REACHED_DEG   3.0f
-#define J1_PRESET_SPEED_RAD_S  6.0f
+#define J1_PRESET_SPEED_RAD_S  12.0f
 #define J1_PRESET_TRIM_MAX_DEG 15.0f
-#define J1_PRESET_TRIM_RATE_DEG_S 420.0f
+#define J1_PRESET_TRIM_RATE_DEG_S 6720.0f
+#define J1_TRIM_TARGET_MIN_DEG 0.0f
+#define J1_TRIM_TARGET_MAX_DEG 220.0f
+#define J1_RETURN_SPEED_RAD_S 0.5f
+#define J1_RETURN_REACHED_DEG 3.0f
+#define J1_SLOW_MOVE_RATE_DEG_S 45.0f
+#define J1_NORMAL_MOVE_RATE_DEG_S 240.0f
 #define J1_DELIVERY_TARGET_DEG 210.0f
 #define J1_DELIVERY_SPEED_RAD_S 0.8f
 #define J1_DELIVERY_REACHED_DEG 3.0f
 #define J1_DELIVERY_TRIM_MAX_DEG 15.0f
+#define J1_PLACE_RAISE_TARGET_DEG 180.0f
+#define J1_PLACE_SPEED_RAD_S 0.8f
+#define J1_PLACE_TRIM_MAX_DEG 20.0f
 
 /* Hiwonder bus servo positions for the suction cup. */
 #define HE_SERVO_MOVE_TIME_MS       300U
@@ -110,11 +127,35 @@ typedef enum {
     ARM_KFS_STAGE_DELIVERY_DONE = 3,
 } Arm_KfsStage_e;
 
+typedef struct {
+    GPIO_TypeDef *port;
+    uint16_t pin;
+    uint8_t stable_pressed;
+    uint8_t sample_pressed;
+    uint8_t toggle_state;
+    uint8_t press_event;
+    uint32_t last_change_tick;
+} Arm_ButtonState_s;
+
 static const Arm_KfsPreset_s arm_kfs_presets[] = {
     {1U, 200U, 85.0f,  ARM_PITCH_KEEP_VERTICAL,   HE_YAW_STATE_FRONT},
     {2U, 400U, 80.0f,  ARM_PITCH_KEEP_HORIZONTAL, HE_YAW_STATE_RIGHT},
     {3U, 600U, 100.0f, ARM_PITCH_KEEP_HORIZONTAL, HE_YAW_STATE_RIGHT},
 };
+
+static Arm_ButtonState_s arm_buttons[ARM_BUTTON_COUNT] = {
+    {CH7_SW2P_GPIO_Port,  CH7_SW2P_Pin,  0U, 0U, 0U, 0U, 0U},
+    {CH8_SW2P_GPIO_Port,  CH8_SW2P_Pin,  0U, 0U, 0U, 0U, 0U},
+    {CH9_SW2P_GPIO_Port,  CH9_SW2P_Pin,  0U, 0U, 0U, 0U, 0U},
+    {CH10_SW2P_GPIO_Port, CH10_SW2P_Pin, 0U, 0U, 0U, 0U, 0U},
+};
+static uint8_t arm_button_toggle_mask = 0U;
+static uint8_t arm_button_event_mask = 0U;
+static uint8_t arm_button_pressed_mask = 0U;
+static uint8_t arm_button_raw_mask = 0U;
+static uint8_t arm_remote_key_last_mask = 0U;
+static uint8_t arm_place_raise_active = 0U;
+static float j1_place_trim_deg = 0.0f;
 
 static HEMotor_Instance *motor_suction_yaw;
 static uint16_t suction_pitch_target = HE_PITCH_DOWN_POS;
@@ -130,9 +171,12 @@ static uint8_t arm_control_active = 0U;
 static uint8_t delivery_origin_switch = 0U;
 static uint8_t yaw_toggle_latched = 0U;
 static uint8_t delivery_trigger_latched = 0U;
+static uint8_t j1_return_from_delivery_slow = 0U;
 static uint32_t yaw_toggle_last_tick = 0U;
 static uint32_t delivery_start_tick = 0U;
 static float j1_delivery_trim_deg = 0.0f;
+static float j1_slow_move_cmd_deg = J1_INIT_TARGET_DEG;
+static uint32_t j1_ramp_last_tick = 0U;
 static uint32_t he_init_start_tick = 0U;
 static uint8_t he_init_refresh_done = 0U;
 static uint32_t he_direct_last_move_tick = 0U;
@@ -237,6 +281,9 @@ static volatile struct {
 
 /* ===================== 辅助函数 ===================== */
 
+static void Arm_ResetControlEvents(void);
+static float Arm_LimitTrimTarget(float base_deg, float *trim_deg);
+
 /* PC8: pump relay, PC2: valve relay. High level turns the relay on. */
 static void Arm_AirSet(uint8_t pump_enable, uint8_t valve_enable)
 {
@@ -252,6 +299,100 @@ static void Arm_AirSet(uint8_t pump_enable, uint8_t valve_enable)
 
     arm_debug.air_pump_on = pump_on;
     arm_debug.air_valve_on = valve_on;
+}
+
+static uint8_t Arm_RemoteKeyMask(void)
+{
+    uint8_t key_mask = 0U;
+
+    if (remote_data == NULL) {
+        return 0U;
+    }
+
+    for (uint8_t i = 0U; i < ARM_BUTTON_COUNT; i++) {
+        if (remote_data->KEY[i] != 0U) {
+            key_mask |= ARM_BUTTON_MASK(i);
+        }
+    }
+
+    return key_mask;
+}
+
+static void Arm_ButtonsInitState(void)
+{
+    arm_button_toggle_mask = 0U;
+    arm_button_event_mask = 0U;
+    arm_button_pressed_mask = 0U;
+    arm_button_raw_mask = 0U;
+    arm_remote_key_last_mask = 0U;
+    for (uint8_t i = 0U; i < ARM_BUTTON_COUNT; i++) {
+        arm_buttons[i].stable_pressed = 0U;
+        arm_buttons[i].sample_pressed = 0U;
+        arm_buttons[i].toggle_state = 0U;
+        arm_buttons[i].press_event = 0U;
+        arm_buttons[i].last_change_tick = 0U;
+    }
+}
+
+static void Arm_ButtonsClearToggles(void)
+{
+    for (uint8_t i = 0U; i < ARM_BUTTON_COUNT; i++) {
+        arm_buttons[i].toggle_state = 0U;
+        arm_buttons[i].press_event = 0U;
+    }
+
+    arm_button_toggle_mask = 0U;
+    arm_button_event_mask = 0U;
+    arm_place_raise_active = 0U;
+    j1_place_trim_deg = 0.0f;
+}
+
+static void Arm_ButtonsUpdate(uint8_t allow_toggle, uint8_t key_mask)
+{
+    uint8_t changed_mask = (uint8_t)(key_mask ^ arm_remote_key_last_mask);
+
+    arm_button_raw_mask = key_mask;
+    arm_button_pressed_mask = key_mask;
+    arm_button_toggle_mask = key_mask;
+    arm_button_event_mask = (allow_toggle != 0U) ? changed_mask : 0U;
+    arm_remote_key_last_mask = key_mask;
+
+    for (uint8_t i = 0U; i < ARM_BUTTON_COUNT; i++) {
+        uint8_t key_state = ((key_mask & ARM_BUTTON_MASK(i)) != 0U) ? 1U : 0U;
+        arm_buttons[i].stable_pressed = key_state;
+        arm_buttons[i].sample_pressed = key_state;
+        arm_buttons[i].toggle_state = key_state;
+        arm_buttons[i].press_event =
+            ((arm_button_event_mask & ARM_BUTTON_MASK(i)) != 0U) ? 1U : 0U;
+    }
+}
+
+static void Arm_HandleButtonActions(uint8_t mode_active)
+{
+    if (mode_active == 0U) {
+        Arm_ButtonsClearToggles();
+        Arm_AirSet(0U, 0U);
+        return;
+    }
+
+    uint8_t place_raise_key_state =
+        (arm_buttons[ARM_BUTTON_CH9_INDEX].toggle_state != 0U) ? 1U : 0U;
+
+    if (arm_place_raise_active != place_raise_key_state) {
+        arm_place_raise_active = place_raise_key_state;
+        arm_kfs_stage = ARM_KFS_STAGE_SELECT;
+        Arm_ResetControlEvents();
+        j1_return_from_delivery_slow = 1U;
+        yaw_toggle_latched = 1U;
+        delivery_trigger_latched = 1U;
+        j1_place_trim_deg = 0.0f;
+        j1_speed_cmd_rad_s = 0.0f;
+        j1_slow_move_cmd_deg = current_angles.j1;
+        j1_ramp_last_tick = 0U;
+    }
+
+    Arm_AirSet(arm_buttons[ARM_BUTTON_CH7_INDEX].toggle_state,
+               arm_buttons[ARM_BUTTON_CH8_INDEX].toggle_state);
 }
 
 static void Arm_SuctionApplyTargets(void)
@@ -604,6 +745,40 @@ static void Arm_J1ApplyTarget(float speed_rad_s)
     DMMotorSetPosVelRef(motor_j1, j1_cmd_abs_rad, speed_rad_s);
 }
 
+static void Arm_J1ApplySlowMoveTarget(float desired_target_deg)
+{
+    uint32_t now = HAL_GetTick();
+    float dt_s = J1_CONTROL_PERIOD_S;
+    float move_rate_deg_s;
+    float step_deg;
+    float limited_target_deg =
+        Arm_LimitFloat(desired_target_deg, J1_TARGET_MIN_DEG, J1_TARGET_MAX_DEG);
+
+    if (j1_ramp_last_tick != 0U) {
+        uint32_t elapsed_ms = (uint32_t)(now - j1_ramp_last_tick);
+        if ((elapsed_ms > 0U) && (elapsed_ms < 50U)) {
+            dt_s = (float)elapsed_ms * 0.001f;
+        }
+    }
+    j1_ramp_last_tick = now;
+
+    move_rate_deg_s = (j1_return_from_delivery_slow != 0U) ?
+                      J1_SLOW_MOVE_RATE_DEG_S : J1_NORMAL_MOVE_RATE_DEG_S;
+    step_deg = move_rate_deg_s * dt_s;
+
+    j1_slow_move_cmd_deg =
+        Arm_ApproachFloat(j1_slow_move_cmd_deg, limited_target_deg, step_deg);
+    target_angles.j1 = j1_slow_move_cmd_deg;
+    Arm_J1ApplyTarget(J1_PRESET_SPEED_RAD_S);
+
+    if ((fabsf(j1_slow_move_cmd_deg - limited_target_deg) <= 0.1f) &&
+        (fabsf(current_angles.j1 - limited_target_deg) <= J1_RETURN_REACHED_DEG)) {
+        j1_return_from_delivery_slow = 0U;
+        target_angles.j1 = limited_target_deg;
+        j1_slow_move_cmd_deg = limited_target_deg;
+    }
+}
+
 static void Arm_J1SetFixedTarget(float target_deg)
 {
     target_angles.j1 = Arm_LimitFloat(target_deg, J1_TARGET_MIN_DEG, J1_TARGET_MAX_DEG);
@@ -631,6 +806,9 @@ static void Arm_J1UpdatePresetTarget(const Remote_Data_s *remote, const Arm_KfsP
         arm_active_switch = preset->switch_value;
         j1_preset_trim_deg = 0.0f;
         j1_speed_cmd_rad_s = 0.0f;
+        j1_return_from_delivery_slow = 1U;
+        j1_slow_move_cmd_deg = (j1_zero_inited != 0U) ? current_angles.j1 : target_angles.j1;
+        j1_ramp_last_tick = 0U;
         Arm_SuctionSetYawState(preset->default_yaw_state);
     }
 
@@ -646,11 +824,7 @@ static void Arm_J1UpdatePresetTarget(const Remote_Data_s *remote, const Arm_KfsP
                                      -J1_PRESET_TRIM_RATE_DEG_S,
                                      J1_PRESET_TRIM_RATE_DEG_S);
     j1_preset_trim_deg += trim_rate_deg_s * J1_CONTROL_PERIOD_S;
-    j1_preset_trim_deg = Arm_LimitFloat(j1_preset_trim_deg,
-                                        -J1_PRESET_TRIM_MAX_DEG,
-                                        J1_PRESET_TRIM_MAX_DEG);
-
-    target_deg = preset->j1_target_deg + j1_preset_trim_deg;
+    target_deg = Arm_LimitTrimTarget(preset->j1_target_deg, &j1_preset_trim_deg);
     target_angles.j1 = Arm_LimitFloat(target_deg, J1_TARGET_MIN_DEG, J1_TARGET_MAX_DEG);
     if (target_angles.j1 != target_deg) {
         j1_limit_hit = 1U;
@@ -671,8 +845,25 @@ static void Arm_ResetControlEvents(void)
     delivery_origin_switch = 0U;
     delivery_trigger_latched = 0U;
     yaw_toggle_latched = 0U;
+    j1_return_from_delivery_slow = 0U;
     delivery_start_tick = 0U;
     j1_delivery_trim_deg = 0.0f;
+    j1_slow_move_cmd_deg = target_angles.j1;
+    j1_ramp_last_tick = 0U;
+}
+
+static float Arm_LimitTrimTarget(float base_deg, float *trim_deg)
+{
+    float target_deg;
+
+    if (trim_deg == NULL) {
+        return Arm_LimitFloat(base_deg, J1_TRIM_TARGET_MIN_DEG, J1_TRIM_TARGET_MAX_DEG);
+    }
+
+    target_deg = base_deg + *trim_deg;
+    target_deg = Arm_LimitFloat(target_deg, J1_TRIM_TARGET_MIN_DEG, J1_TRIM_TARGET_MAX_DEG);
+    *trim_deg = target_deg - base_deg;
+    return target_deg;
 }
 
 static void Arm_SetDeliveryTargets(void)
@@ -701,6 +892,8 @@ static void Arm_StartDelivery(uint8_t current_switch)
     delivery_start_tick = HAL_GetTick();
     j1_delivery_trim_deg = 0.0f;
     j1_speed_cmd_rad_s = 0.0f;
+    j1_slow_move_cmd_deg = current_angles.j1;
+    j1_ramp_last_tick = 0U;
     Arm_SetDeliveryTargets();
 }
 
@@ -730,10 +923,48 @@ static void Arm_J1UpdateDeliveryTrim(const Remote_Data_s *remote)
                                      -J1_PRESET_TRIM_RATE_DEG_S,
                                      J1_PRESET_TRIM_RATE_DEG_S);
     j1_delivery_trim_deg += trim_rate_deg_s * J1_CONTROL_PERIOD_S;
-    j1_delivery_trim_deg = Arm_LimitFloat(j1_delivery_trim_deg,
-                                          -J1_DELIVERY_TRIM_MAX_DEG,
-                                          J1_DELIVERY_TRIM_MAX_DEG);
+    (void)Arm_LimitTrimTarget(J1_DELIVERY_TARGET_DEG, &j1_delivery_trim_deg);
 
+    j1_remote_rate_deg_s = trim_rate_deg_s;
+    j1_remote_speed_rad_s = fabsf(trim_rate_deg_s) * DEGREE_2_RAD;
+}
+
+static void Arm_SuctionSetPlaceRaiseTargets(void)
+{
+    suction_pitch_target = HE_PITCH_FRONT_POS;
+    suction_yaw_target = HE_YAW_FRONT_POS;
+    suction_pitch_state = 1U;
+    suction_yaw_state = HE_YAW_STATE_FRONT;
+    suction_move_time_ms = HE_DELIVERY_MOVE_TIME_MS;
+    suction_pitch_from_down_deg =
+        ((float)HE_PITCH_FRONT_POS - (float)HE_PITCH_DOWN_POS) / HE_PITCH_RAW_PER_DEG;
+}
+
+static void Arm_J1UpdatePlaceRaiseTarget(const Remote_Data_s *remote)
+{
+    float raw = 0.0f;
+    float trim_rate_deg_s;
+    float target_deg;
+
+    if (remote != NULL) {
+        raw = (float)remote->rocker_r1;
+        if (fabsf(raw) < (float)J1_REMOTE_DEADBAND) {
+            raw = 0.0f;
+        }
+    }
+
+    trim_rate_deg_s = raw / J1_REMOTE_FULL_SCALE * J1_PRESET_TRIM_RATE_DEG_S;
+    trim_rate_deg_s = Arm_LimitFloat(trim_rate_deg_s,
+                                     -J1_PRESET_TRIM_RATE_DEG_S,
+                                     J1_PRESET_TRIM_RATE_DEG_S);
+    j1_place_trim_deg += trim_rate_deg_s * J1_CONTROL_PERIOD_S;
+    target_deg = Arm_LimitTrimTarget(J1_PLACE_RAISE_TARGET_DEG, &j1_place_trim_deg);
+    target_angles.j1 = Arm_LimitFloat(target_deg, J1_TARGET_MIN_DEG, J1_TARGET_MAX_DEG);
+    if (target_angles.j1 != target_deg) {
+        j1_limit_hit = 1U;
+    }
+
+    j1_preset_target_deg = target_angles.j1;
     j1_remote_rate_deg_s = trim_rate_deg_s;
     j1_remote_speed_rad_s = fabsf(trim_rate_deg_s) * DEGREE_2_RAD;
 }
@@ -890,6 +1121,7 @@ static void Arm_Compute2LWrist(Arm_JointAngles_t angles, float *x, float *y)
 void Arm_Init(void)
 {
     Arm_AirSet(0U, 0U);
+    Arm_ButtonsInitState();
 
     /* ---- J1: DM4340 大臂电机 (模式) ---- */
     Motor_Init_Config_s dm_config = {
@@ -971,6 +1203,7 @@ void Arm_Init(void)
         arm_ready_switch_snapshot = 0U;
         arm_ready_reached = 0U;
         arm_control_active = 0U;
+        arm_place_raise_active = 0U;
         delivery_origin_switch = 0U;
         yaw_toggle_latched = 0U;
         delivery_trigger_latched = 0U;
@@ -980,7 +1213,10 @@ void Arm_Init(void)
         he_init_refresh_done = 0U;
         j1_preset_trim_deg = 0.0f;
         j1_delivery_trim_deg = 0.0f;
+        j1_place_trim_deg = 0.0f;
         j1_preset_target_deg = 0.0f;
+        j1_slow_move_cmd_deg = J1_INIT_TARGET_DEG;
+        j1_ramp_last_tick = 0U;
         suction_pitch_from_down_deg = 0.0f;
         he_direct_last_move_tick = 0U;
         he_direct_last_load_tick = 0U;
@@ -1093,6 +1329,7 @@ void Arm_Task(void)
     uint8_t prev_mode_active = arm_control_active;
     uint8_t delivery_j1_done = 0U;
     uint8_t delivery_servo_done = 0U;
+    uint8_t remote_key_mask = 0U;
     const Arm_KfsPreset_s *preset = NULL;
     float suction_follow_j1_deg = 0.0f;
     float active_stage_target_deg = J1_INIT_TARGET_DEG;
@@ -1101,13 +1338,22 @@ void Arm_Task(void)
     if (remote_data != NULL) {
         sw = remote_data->switch_right;
         mode_active = Arm_IsControlActive(remote_data);
-        {
-            uint8_t air_on = (remote_data->switch_left == AIR_REMOTE_SWITCH_ON) ? 1U : 0U;
-            Arm_AirSet(air_on, air_on);
-        }
+        remote_key_mask = Arm_RemoteKeyMask();
+        arm_debug.remote_key0 = remote_data->KEY[0];
+        arm_debug.remote_key1 = remote_data->KEY[1];
+        arm_debug.remote_key2 = remote_data->KEY[2];
+        arm_debug.remote_key3 = remote_data->KEY[3];
     } else {
-        Arm_AirSet(0U, 0U);
+        arm_debug.remote_key0 = 0U;
+        arm_debug.remote_key1 = 0U;
+        arm_debug.remote_key2 = 0U;
+        arm_debug.remote_key3 = 0U;
     }
+    arm_debug.remote_key_mask = remote_key_mask;
+
+    Arm_ReadJointAngles(&current_angles);
+    Arm_ButtonsUpdate(mode_active, remote_key_mask);
+    Arm_HandleButtonActions(mode_active);
 
     if ((mode_active != 0U) && (prev_mode_active == 0U) && (remote_data != NULL)) {
         yaw_toggle_latched =
@@ -1117,7 +1363,6 @@ void Arm_Task(void)
     }
     arm_control_active = mode_active;
 
-    Arm_ReadJointAngles(&current_angles);
     preset = NULL;
 
     arm_debug.task_count++;
@@ -1151,6 +1396,7 @@ void Arm_Task(void)
             active_stage_target_deg = J1_INIT_TARGET_DEG;
             Arm_J1SetFixedTarget(J1_INIT_TARGET_DEG);
             Arm_J1ApplyTarget(J1_INIT_SPEED_RAD_S);
+            j1_slow_move_cmd_deg = target_angles.j1;
 
             if (fabsf(current_angles.j1 - J1_INIT_TARGET_DEG) <= J1_READY_REACHED_DEG) {
                 arm_ready_reached = 1U;
@@ -1162,14 +1408,25 @@ void Arm_Task(void)
 
         if ((arm_kfs_stage != ARM_KFS_STAGE_INIT100) && (mode_active == 0U)) {
             preset = NULL;
-            active_stage_target_deg = J1_INIT_TARGET_DEG;
+            active_stage_target_deg = current_angles.j1;
             arm_active_switch = 0U;
             j1_preset_trim_deg = 0.0f;
-            j1_preset_target_deg = J1_INIT_TARGET_DEG;
+            j1_preset_target_deg = current_angles.j1;
             Arm_ResetControlEvents();
-            Arm_J1SetFixedTarget(J1_INIT_TARGET_DEG);
-            Arm_J1ApplyTarget(J1_READY_SPEED_RAD_S);
+            arm_place_raise_active = 0U;
+            j1_place_trim_deg = 0.0f;
+            target_angles.j1 = current_angles.j1;
+            j1_slow_move_cmd_deg = current_angles.j1;
+            Arm_J1ApplyTarget(0.0f);
             Arm_SuctionSetInitTargets();
+        } else if ((arm_kfs_stage != ARM_KFS_STAGE_INIT100) && (arm_place_raise_active != 0U)) {
+            preset = Arm_GetKfsPreset(sw);
+            active_stage_target_deg = J1_PLACE_RAISE_TARGET_DEG;
+            Arm_J1UpdatePlaceRaiseTarget(remote_data);
+            j1_return_from_delivery_slow = 0U;
+            j1_slow_move_cmd_deg = target_angles.j1;
+            Arm_J1ApplyTarget(J1_PLACE_SPEED_RAD_S);
+            Arm_SuctionSetPlaceRaiseTargets();
         } else if (arm_kfs_stage != ARM_KFS_STAGE_INIT100) {
             preset = Arm_GetKfsPreset(sw);
             if (preset != NULL) {
@@ -1177,6 +1434,9 @@ void Arm_Task(void)
                      (arm_kfs_stage == ARM_KFS_STAGE_DELIVERY_DONE)) &&
                     (Arm_DeliverySwitchChanged(sw, preset) != 0U)) {
                     arm_kfs_stage = ARM_KFS_STAGE_SELECT;
+                    j1_return_from_delivery_slow = 1U;
+                    j1_slow_move_cmd_deg = current_angles.j1;
+                    j1_ramp_last_tick = 0U;
                     delivery_origin_switch = 0U;
                     delivery_start_tick = 0U;
                     yaw_toggle_latched = 1U;
@@ -1193,6 +1453,8 @@ void Arm_Task(void)
                         Arm_SetDeliveryTargets();
                         Arm_J1ApplyTarget(J1_DELIVERY_SPEED_RAD_S);
                     } else {
+                        j1_return_from_delivery_slow = 0U;
+                        j1_slow_move_cmd_deg = target_angles.j1;
                         Arm_J1ApplyTarget(J1_PRESET_SPEED_RAD_S);
                         suction_follow_j1_deg =
                             (j1_zero_inited != 0U) ? current_angles.j1 : target_angles.j1;
@@ -1238,6 +1500,8 @@ void Arm_Task(void)
         j1_preset_trim_deg = 0.0f;
         j1_preset_target_deg = 0.0f;
         Arm_ResetControlEvents();
+        arm_place_raise_active = 0U;
+        j1_place_trim_deg = 0.0f;
         Arm_SuctionSetInitTargets();
         Arm_J1ApplyTarget(0.0f);
     }
@@ -1264,10 +1528,12 @@ void Arm_Task(void)
     arm_debug.kfs_height_mm = (preset != NULL) ? preset->height_mm : 0U;
     arm_debug.kfs_mode = (preset != NULL) ? preset->switch_value : 0U;
     arm_debug.j1_preset_deg = active_stage_target_deg;
-    arm_debug.j1_trim_deg = ((arm_kfs_stage == ARM_KFS_STAGE_DELIVERY) ||
+    arm_debug.j1_trim_deg = (arm_place_raise_active != 0U) ? j1_place_trim_deg :
+                            (((arm_kfs_stage == ARM_KFS_STAGE_DELIVERY) ||
                              (arm_kfs_stage == ARM_KFS_STAGE_DELIVERY_DONE)) ?
-                            j1_delivery_trim_deg : j1_preset_trim_deg;
+                            j1_delivery_trim_deg : j1_preset_trim_deg);
     arm_debug.j1_preset_target_deg = j1_preset_target_deg;
+    arm_debug.j1_slow_move_cmd_deg = j1_slow_move_cmd_deg;
     arm_debug.suction_pitch_from_down_deg = suction_pitch_from_down_deg;
     arm_debug.suction_pitch_world_mode = (preset != NULL) ? (uint8_t)preset->pitch_mode : 0U;
     arm_debug.arm_control_active = arm_control_active;
@@ -1276,6 +1542,12 @@ void Arm_Task(void)
     arm_debug.delivery_trigger_latched = delivery_trigger_latched;
     arm_debug.suction_move_time_ms = suction_move_time_ms;
     arm_debug.delivery_elapsed_ms = delivery_elapsed_ms;
+    arm_debug.arm_button_toggle_mask = arm_button_toggle_mask;
+    arm_debug.arm_button_event_mask = arm_button_event_mask;
+    arm_debug.arm_button_pressed_mask = arm_button_pressed_mask;
+    arm_debug.arm_button_raw_mask = arm_button_raw_mask;
+    arm_debug.arm_place_raise_active = arm_place_raise_active;
+    arm_debug.j1_return_from_delivery_slow = j1_return_from_delivery_slow;
     arm_debug.he_direct_send_count = g_he_send_count;
     arm_debug.he_direct_move_count = g_he_move_count;
     arm_debug.he_direct_load_count = g_he_load_count;
