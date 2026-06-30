@@ -1127,8 +1127,8 @@ void Arm_Init(void)
     Motor_Init_Config_s dm_config = {
         .can_init_config = {
             .fdcan_handle = &hfdcan2,
-            .tx_id = 1,
-            .rx_id = 0x000,
+            .tx_id = 2,
+            .rx_id = 0x12,
         },
         .controller_setting_init_config = {
             .motor_reverse_flag     = MOTOR_DIRECTION_NORMAL,
