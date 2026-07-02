@@ -33,6 +33,7 @@
  *       - 力矩控制：KP = 0，KD = 0，t_ff = 设定值
  *
  *   位置速度模式 (mode 2)：CAN ID = SlaveID + 0x100
+ *     控制帧数据域为 8 字节：前 4 字节位置 float，后 4 字节速度 float
  *     电机内部三环串级控制 (位置环→速度环→电流环)
  *
  *   速度模式 (mode 3)：CAN ID = SlaveID + 0x200
@@ -51,10 +52,10 @@
  *   注意: 使能/失能通过独立命令帧控制,不在 MIT 帧中携带
  *
  * 【控制帧格式 - 位置速度模式】
- *   Byte0-1: 位置期望值 (uint16, 大端)
- *   Byte2-3: 速度期望值 (uint16, 大端)
- *   Byte4-6: 保留 (填 0x00)
- *   Byte7:   0xFC 使能 / 0xFD 失能
+ *   Byte0-3: 位置期望值 p_des (float, 小端)
+ *   Byte4-7: 速度期望值 v_des (float, 小端)
+ *   注意: 正常位置速度控制帧中不携带 0xFC/0xFD。
+ *        使能/失能是独立命令帧, 且使用电机当前模式对应的 CAN ID 发送。
  *
  * 【控制帧格式 - 速度模式】
  *   Byte0-1: 速度期望值 (uint16, 大端)
@@ -216,7 +217,7 @@
  */
 typedef enum {
     DM_MODE_MIT     = 0,  /**< MIT 混合控制模式 (位置+速度+力矩并联,最常用) */
-    DM_MODE_POS_VEL = 1,  /**< 位置速度串级模式 (CAN ID +0x100, float p_des, float v_des) */
+    DM_MODE_POS_VEL = 1,  /**< 位置速度串级模式 (CAN ID +0x100, 8字节: float位置 + float速度) */
     DM_MODE_VEL     = 2,  /**< 纯速度模式 (电机内部速度环) */
 } DM_Control_Mode_e;
 

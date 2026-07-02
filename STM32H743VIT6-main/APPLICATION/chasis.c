@@ -704,8 +704,9 @@ void ChassisTask(void)
         vx = -(float)remote_data->rocker_l_ / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
         // Left stick Y is used as the lateral channel.
         vy = (float)remote_data->rocker_l1 / REMOTE_STICK_RANGE * REMOTE_MAX_LINEAR;
-        // 右摇杆 X轴 → 旋转角速度 vw
-        vw = (float)remote_data->rocker_r_ / REMOTE_STICK_RANGE * REMOTE_MAX_ANGULAR;
+        // 右摇杆 R/R1 不再控制底盘旋转，保留左摇杆平移控制。
+         vw = (float)remote_data->rocker_r_ / REMOTE_STICK_RANGE * REMOTE_MAX_ANGULAR;
+        vw = 0.0f;
 
         // 死区
         if (fabsf(vx) < REMOTE_DEADBAND) vx = 0.0f;

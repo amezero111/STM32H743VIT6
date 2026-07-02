@@ -11,19 +11,53 @@
 #include "general_def.h"
 #include <math.h>
 
+#define AIR_MODULE_1_GPIO_PORT GPIOC
+#define AIR_MODULE_1_GPIO_PIN  GPIO_PIN_8
+#define AIR_MODULE_2_GPIO_PORT GPIOD
+#define AIR_MODULE_2_GPIO_PIN  GPIO_PIN_3
+#define AIR_MODULE_ON_LEVEL    GPIO_PIN_SET
+#define AIR_MODULE_OFF_LEVEL   GPIO_PIN_RESET
+#define AIR_REMOTE_SWITCH_ON   2U
+
 /* ===================== 电机实例 ===================== */
 
 static DMMotor_Instance *motor_j1;    /* 大臂 DM4340 */
-static HEMotor_Instance *motor_j3;    /* 末端舵机 (幻尔), ID=4, USART1 */
-static HEMotor_Instance *motor_he;    /* 幻尔跟随舵机, ID=4, USART2 */
+static DMMotor_Instance *motor_j2;    /* 新增达妙电机 */
+static HEMotor_Instance *motor_j3;    /* 4号幻尔舵机, USART3 */
+static HEMotor_Instance *motor_he;    /* 3号幻尔舵机, USART3 */
+static HEMotor_Instance *motor_h1;    /* 1号幻尔舵机, USART6 */
+static HEMotor_Instance *motor_h2;    /* 2号幻尔舵机, USART6 */
 
-/* HE 舵机参数 */
-#define HE_INIT_POS      470.0f  /* 初始发送值 (垂直) */
-#define HE_RAW_PER_DEG   4.17f   /* 达妙每转 1 度，HE 发送值变化 4.17 */
-#define J1_INIT_POS_RAD  (-2.2f) /* 达妙上电初始目标位置 */
-#define J1_RC_STEP_RAD   0.005f  /* 遥控器每周期位置增量 */
-#define J1_MAX_VEL_RAD_S 12.0f   /* 达妙位置速度模式速度上限 */
-#define HE_FOLLOW_TIME   8       /* HE 跟随时间 ms */
+/* 舵机与达妙控制参数 */
+#define SERVO3_INIT_POS      470U
+#define SERVO4_INIT_POS      685U
+#define SERVO3_PRESET_1_POS  400U
+#define SERVO4_PRESET_1_POS  280U
+#define SERVO3_PRESET_2_POS  160U
+#define SERVO4_PRESET_2_POS  685U
+#define SERVO3_PRESET_3_POS  100U
+#define SERVO4_PRESET_3_POS  685U
+#define SERVO_MOVE_TIME_MS   100U
+#define J1_INIT_POS_RAD      (-2.2f)
+#define J1_RC_STEP_RAD       0.03f
+#define J1_MAX_VEL_RAD_S     12.0f
+#define J1_PRESET_1_DEG      0.0f
+#define J1_PRESET_2_DEG      0.0f
+#define J1_PRESET_3_DEG      0.0f
+#define H1_INIT_POS          390U
+#define H2_INIT_POS          440U
+#define H1_PRESET_1_POS      390U
+#define H2_PRESET_1_POS      170U
+#define H1_PRESET_2_POS      780U
+#define H2_PRESET_2_POS      400U
+#define H1_PRESET_3_POS      780U
+#define H2_PRESET_3_POS      450U
+#define J2_MAX_VEL_RAD_S     12.0f
+#define J2_RC_STEP_RAD       0.03f
+#define J2_PRESET_1_DEG      0.0f
+#define J2_PRESET_2_DEG      0.0f
+#define J2_PRESET_3_DEG      0.0f
+#define J2_MOTOR_SIGN        1.0f
 
 /* J2 减速比 & 同步带耦合系数:
  * M3508 内置 1:19 减速器, 编码器测量的是转子角度 (减速前),
@@ -61,6 +95,10 @@ static float home_wrist_y = 0.0f;         /* home 时 L2 末端 (腕点) Y 坐�
 
 static Arm_JointAngles_t current_angles;  /* 本周期读到的当前角度 */
 static Arm_JointAngles_t target_angles;   /* 下发给电机的目标角度 */
+static float target_j2_deg = 0.0f;
+static uint8_t arm_last_left_switch = 0U;
+static uint8_t arm_last_right_switch = 0U;
+static uint8_t arm_last_key_state[4] = {0U, 0U, 0U, 0U};
 
 /* ===================== 调试观测 ===================== */
 
@@ -80,9 +118,124 @@ static volatile struct {
     uint16_t ik_fail_count;      /* IK 失败次数 (含超限) */
     float he_cmd_pos;            /* 当前 HE 发送值 */
     float he_follow_deg;         /* HE 跟随使用的 J1 角度 */
+    uint8_t air_pc8_on;
+    uint8_t air_pd3_on;
 } arm_debug;
 
 /* ===================== 辅助函数 ===================== */
+
+/* Air outputs: high = on, low = off. */
+static void Arm_AirOutputSet(GPIO_TypeDef *gpio_port, uint16_t gpio_pin, uint8_t enable)
+{
+    uint8_t on = (enable != 0U) ? 1U : 0U;
+
+    HAL_GPIO_WritePin(gpio_port,
+                      gpio_pin,
+                      on ? AIR_MODULE_ON_LEVEL : AIR_MODULE_OFF_LEVEL);
+}
+
+static void Arm_AirModule1Set(uint8_t enable)
+{
+    uint8_t on = (enable != 0U) ? 1U : 0U;
+
+    Arm_AirOutputSet(AIR_MODULE_1_GPIO_PORT, AIR_MODULE_1_GPIO_PIN, on);
+    arm_debug.air_pc8_on = on;
+}
+
+static void Arm_AirModule2Set(uint8_t enable)
+{
+    uint8_t on = (enable != 0U) ? 1U : 0U;
+
+    Arm_AirOutputSet(AIR_MODULE_2_GPIO_PORT, AIR_MODULE_2_GPIO_PIN, on);
+    arm_debug.air_pd3_on = on;
+}
+
+static void Arm_ProcessAirKeys(uint8_t left_sw)
+{
+    uint8_t key_now[4] = {0U, 0U, 0U, 0U};
+
+    if (remote_data != NULL) {
+        key_now[0] = (remote_data->KEY[0] != 0U) ? 1U : 0U;
+        key_now[1] = (remote_data->KEY[1] != 0U) ? 1U : 0U;
+        key_now[2] = (remote_data->KEY[2] != 0U) ? 1U : 0U;
+        key_now[3] = (remote_data->KEY[3] != 0U) ? 1U : 0U;
+    }
+
+    if ((left_sw == AIR_REMOTE_SWITCH_ON) && (remote_data != NULL)) {
+        if ((key_now[0] != 0U) && (arm_last_key_state[0] == 0U)) {
+            Arm_AirModule1Set(1U);
+        }
+        if ((key_now[1] != 0U) && (arm_last_key_state[1] == 0U)) {
+            Arm_AirModule1Set(0U);
+        }
+        if ((key_now[2] != 0U) && (arm_last_key_state[2] == 0U)) {
+            Arm_AirModule2Set(1U);
+        }
+        if ((key_now[3] != 0U) && (arm_last_key_state[3] == 0U)) {
+            Arm_AirModule2Set(0U);
+        }
+    }
+
+    arm_last_key_state[0] = key_now[0];
+    arm_last_key_state[1] = key_now[1];
+    arm_last_key_state[2] = key_now[2];
+    arm_last_key_state[3] = key_now[3];
+}
+
+static void Arm_SetServoTargets(uint16_t servo3_pos, uint16_t servo4_pos)
+{
+    if (motor_he != NULL) {
+        motor_he->ref.position = servo3_pos;
+        motor_he->ref.time = SERVO_MOVE_TIME_MS;
+    }
+    if (motor_j3 != NULL) {
+        motor_j3->ref.position = servo4_pos;
+        motor_j3->ref.time = SERVO_MOVE_TIME_MS;
+    }
+}
+
+static void Arm_SetServoTargets2(uint16_t h1_pos, uint16_t h2_pos)
+{
+    if (motor_h1 != NULL) {
+        motor_h1->ref.position = h1_pos;
+        motor_h1->ref.time = SERVO_MOVE_TIME_MS;
+    }
+    if (motor_h2 != NULL) {
+        motor_h2->ref.position = h2_pos;
+        motor_h2->ref.time = SERVO_MOVE_TIME_MS;
+    }
+}
+
+static float Arm_GetPresetJ1Deg(uint8_t right_sw)
+{
+    switch (right_sw) {
+        case 1U: return J1_PRESET_1_DEG;
+        case 2U: return J1_PRESET_2_DEG;
+        case 3U: return J1_PRESET_3_DEG;
+        default: return target_angles.j1;
+    }
+}
+
+static void Arm_ApplyPreset(uint8_t right_sw)
+{
+    switch (right_sw) {
+        case 1U: Arm_SetServoTargets(SERVO3_PRESET_1_POS, SERVO4_PRESET_1_POS); break;
+        case 2U: Arm_SetServoTargets(SERVO3_PRESET_2_POS, SERVO4_PRESET_2_POS); break;
+        case 3U: Arm_SetServoTargets(SERVO3_PRESET_3_POS, SERVO4_PRESET_3_POS); break;
+        default: Arm_SetServoTargets(SERVO3_INIT_POS, SERVO4_INIT_POS); return;
+    }
+    target_angles.j1 = Arm_GetPresetJ1Deg(right_sw);
+}
+
+static void Arm_ApplyPreset2(uint8_t right_sw)
+{
+    switch (right_sw) {
+        case 1U: Arm_SetServoTargets2(H1_PRESET_1_POS, H2_PRESET_1_POS); target_j2_deg = J2_PRESET_1_DEG; break;
+        case 2U: Arm_SetServoTargets2(H1_PRESET_2_POS, H2_PRESET_2_POS); target_j2_deg = J2_PRESET_2_DEG; break;
+        case 3U: Arm_SetServoTargets2(H1_PRESET_3_POS, H2_PRESET_3_POS); target_j2_deg = J2_PRESET_3_DEG; break;
+        default: Arm_SetServoTargets2(H1_INIT_POS, H2_INIT_POS); break;
+    }
+}
 
 /**
  * @brief 读取 3 个关节的当前角度
@@ -116,12 +269,15 @@ static void Arm_Compute2LWrist(Arm_JointAngles_t angles, float *x, float *y)
 
 void Arm_Init(void)
 {
+    Arm_AirModule1Set(0U);
+    Arm_AirModule2Set(0U);
+
     /* ---- J1: DM4340 大臂电机 (模式) ---- */
     Motor_Init_Config_s dm_config = {
         .can_init_config = {
             .fdcan_handle = &hfdcan2,
-            .tx_id = 1,
-            .rx_id = 0x11,
+            .tx_id = 3,
+            .rx_id = 0x13,
         },
         .controller_setting_init_config = {
             .motor_reverse_flag     = MOTOR_DIRECTION_NORMAL,
@@ -140,38 +296,69 @@ void Arm_Init(void)
     target_angles.j1 = J1_MOTOR_SIGN * (J1_INIT_POS_RAD * RAD_2_DEGREE);
     DMMotorSetPosVelRef(motor_j1, J1_INIT_POS_RAD, 4.0f); // 初始位置 -2.2rad
 
-    /* ---- J3: 幻尔舵机, USART3, ID=4 ---- */
+    /* ---- 4号幻尔舵机 ---- */
     {
         HEMotor_Init_Config_s j3_config = {
             .huart = &huart3,
             .motor_config = { .id = 4, .cmd = SERVO_MOVE_TIME_WRITE },
-            .motor_ref = { .position = 500, .time = 100, .stop_flag = HE_ENABLED },
+            .motor_ref = { .position = SERVO4_INIT_POS, .time = SERVO_MOVE_TIME_MS, .stop_flag = HE_ENABLED },
         };
         motor_j3 = HEMotorInit(&j3_config);
     }
 
-    /* ---- HE: 幻尔舵机, USART1, ID=4 ---- */
+    /* ---- 3号幻尔舵机 ---- */
     {
         HEMotor_Init_Config_s he_config = {
-            .huart = &huart2,
-            .motor_config = { .id = 4, .cmd = SERVO_MOVE_TIME_WRITE },
-            .motor_ref = { .position = HE_INIT_POS, .time = 100, .stop_flag = HE_ENABLED },
+            .huart = &huart3,
+            .motor_config = { .id = 3, .cmd = SERVO_MOVE_TIME_WRITE },
+            .motor_ref = { .position = SERVO3_INIT_POS, .time = SERVO_MOVE_TIME_MS, .stop_flag = HE_ENABLED },
         };
         motor_he = HEMotorInit(&he_config);
     }
+
+    /* ---- 新增达妙电机 ---- */
+    {
+        Motor_Init_Config_s dm2_config = dm_config;
+        dm2_config.can_init_config.tx_id = 2;
+        dm2_config.can_init_config.rx_id = 0x12;
+        motor_j2 = DMMotorInit(&dm2_config);
+        DMMotorSetControlMode(motor_j2, DM_MODE_POS_VEL);
+        DMMotorEnable(motor_j2);
+        DMMotorSetPosVelRef(motor_j2, 0.0f, 0.0f);
+    }
+
+    { HEMotor_Init_Config_s cfg = {
+		.huart = &huart2,
+    .motor_config = { .id = 1, .cmd = SERVO_MOVE_TIME_WRITE },
+		.motor_ref = { .position = H1_INIT_POS, .time = SERVO_MOVE_TIME_MS, .stop_flag = HE_ENABLED }
+		};
+		motor_h1 = HEMotorInit(&cfg); }
+    { HEMotor_Init_Config_s cfg = {
+		.huart = &huart2,
+    .motor_config = { .id = 2, .cmd = SERVO_MOVE_TIME_WRITE },
+		.motor_ref = { .position = H2_INIT_POS, .time = SERVO_MOVE_TIME_MS, .stop_flag = HE_ENABLED } };
+		motor_h2 = HEMotorInit(&cfg);
+		}
 }
 
 /* ===================== 控制任务 ===================== */
 
 void Arm_Task(void)
 {
-    uint8_t sw = remote_data->switch_right;
+    uint8_t left_sw = 0U;
+    uint8_t right_sw = 0U;
+
+    if (remote_data != NULL) {
+        left_sw = remote_data->switch_left;
+        right_sw = remote_data->switch_right;
+    }
+
+    Arm_ProcessAirKeys(left_sw);
 
     Arm_ReadJointAngles(&current_angles);
     arm_debug.current = current_angles;
-    arm_debug.sw = sw;
+    arm_debug.sw = right_sw;
 
-    /* 简化逻辑：使用绝对坐标系，并保持初始化目标为 -2.2rad */
     if (motor_j1 && motor_j1->feedback_initialized && !j1_zero_inited) {
         j1_zero_offset_deg = 0.0f;
         j1_zero_inited = 1;
@@ -180,41 +367,39 @@ void Arm_Task(void)
         target_angles.j3 = current_angles.j3;
     }
 
-    /* 遥控器控制: sw1=停止, sw2=手动控制达妙电机(J1), sw3=保持当前位置 */
-    if (sw == 1) {
-        target_angles = current_angles;
+    if ((left_sw == 2U) && (remote_data != NULL)) {
+        if ((arm_last_left_switch != 2U) || (arm_last_right_switch != right_sw)) Arm_ApplyPreset(right_sw);
+        {
+            float j1_step_rad = (float)remote_data->rocker_r1 / 660.0f * J1_RC_STEP_RAD;
+            if (fabsf(j1_step_rad) < 0.0002f) j1_step_rad = 0.0f;
+            target_angles.j1 += j1_step_rad * RAD_2_DEGREE;
+            if (target_angles.j1 > 180.0f) target_angles.j1 = 180.0f;
+            if (target_angles.j1 < -180.0f) target_angles.j1 = -180.0f;
+        }
+        DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, J1_MAX_VEL_RAD_S);
+        if (motor_j2 && motor_j2->feedback_initialized) DMMotorSetPosVelRef(motor_j2, motor_j2->measure.position_rad, 0.0f);
+    } else if ((left_sw == 3U) && (remote_data != NULL)) {
+        if ((arm_last_left_switch != 3U) || (arm_last_right_switch != right_sw)) Arm_ApplyPreset2(right_sw);
+        {
+            float j2_step_rad = (float)remote_data->rocker_r1 / 660.0f * J2_RC_STEP_RAD;
+            if (fabsf(j2_step_rad) < 0.0002f) j2_step_rad = 0.0f;
+            target_j2_deg += j2_step_rad * RAD_2_DEGREE;
+            if (target_j2_deg > 180.0f) target_j2_deg = 180.0f;
+            if (target_j2_deg < -180.0f) target_j2_deg = -180.0f;
+        }
+        DMMotorSetPosVelRef(motor_j2, J2_MOTOR_SIGN * target_j2_deg * DEGREE_2_RAD, J2_MAX_VEL_RAD_S);
+        target_angles.j1 = current_angles.j1;
         DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, 0.0f);
-    } else if (sw == 2) {
-        float j1_step_rad = (float)remote_data->rocker_r1 / 660.0f * J1_RC_STEP_RAD;
-
-        if (fabsf(j1_step_rad) < 0.0002f)
-            j1_step_rad = 0.0f;
-
-        target_angles.j1 += j1_step_rad * RAD_2_DEGREE;
-
-        if (target_angles.j1 > 180.0f) target_angles.j1 = 180.0f;
-        if (target_angles.j1 < -180.0f) target_angles.j1 = -180.0f;
-
-        DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, J1_MAX_VEL_RAD_S);
     } else {
-        DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, J1_MAX_VEL_RAD_S);
+        target_angles.j1 = current_angles.j1;
+        DMMotorSetPosVelRef(motor_j1, J1_MOTOR_SIGN * target_angles.j1 * DEGREE_2_RAD, 0.0f);
+        if (motor_j2 && motor_j2->feedback_initialized) DMMotorSetPosVelRef(motor_j2, motor_j2->measure.position_rad, 0.0f);
     }
 
+    arm_last_left_switch = left_sw;
+    arm_last_right_switch = right_sw;
     arm_debug.target = target_angles;
 
-    /* HE 舵机按 J1 目标角度反向跟随 */
-    if (motor_he) {
-        float he_follow_deg = target_angles.j1;
-        float he_pos = HE_INIT_POS - he_follow_deg * HE_RAW_PER_DEG;
-        if (he_pos > 1000.0f) he_pos = 1000.0f;
-        if (he_pos < 0.0f) he_pos = 0.0f;
-        motor_he->ref.position = (uint16_t)(he_pos + 0.5f);
-        motor_he->ref.time = HE_FOLLOW_TIME;
-        arm_debug.he_follow_deg = he_follow_deg;
-        arm_debug.he_cmd_pos = he_pos;
-    }
-
-    /* DM 电机控制发送 (位置速度模式正常遥控) */
     DMMotorControl();
     HEMotorControl();
 }
